@@ -1,5 +1,8 @@
 node_modules/**
 scripts/**
+vercel/**
+vercel.json
+dist/**
 tests/**
 .git/**
 .github/**

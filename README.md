@@ -35,6 +35,14 @@ Move beyond Apps Script when pilot load approaches quotas, execution routinely n
 
 ## Deploy
 
+### Vercel stakeholder preview
+
+The repository includes a Vercel build that assembles the Apps Script HTML partials into a standalone, interactive preview with representative management data. Vercel runs `npm run build` and publishes `dist/`.
+
+The preview is for stakeholder review; sample records reset on refresh. Persistent Google Sheets data, Drive evidence, scheduled reminders, and escalation emails run from the Apps Script production deployment below.
+
+### Apps Script production app
+
 ### 1. Create the Apps Script project
 
 Create a standalone Apps Script project under a controlled organizational owner. In its associated Google Cloud project, enable the Google Drive API. The manifest already declares the Advanced Drive service and the narrow OAuth scopes used by the application.
