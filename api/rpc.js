@@ -241,9 +241,12 @@ async function dispatch(db, method, payload) {
     const compliance = await Promise.all(deps.map(async function (dep) {
       const departmentUsers = await users.find({ department_id: dep.department_id }).project({ user_id: 1 }).toArray();
       const userIds = departmentUsers.map(function (user) { return user.user_id; });
-      const expected = userIds.length ? await db.collection('obligations').countDocuments({ user_id: { $in: userIds } }) : 0;
-      const submittedCount = await submissions.countDocuments({ department_id: dep.department_id, status: { $in: ['SUBMITTED', 'REVIEWED', 'CLARIFICATION_REQUIRED'] } });
-      return { departmentName: dep.name, expected: expected, submitted: submittedCount, missing: Math.max(0, expected - submittedCount), complianceRate: expected ? Math.min(100, Math.round((submittedCount / expected) * 100)) : 100 };
+      const departmentObligations = userIds.length ? await db.collection('obligations').find({ user_id: { $in: userIds } }).toArray() : [];
+      const expected = departmentObligations.length;
+      const submittedCount = departmentObligations.filter(function (row) { return row.status === 'SUBMITTED'; }).length;
+      const missingCount = departmentObligations.filter(function (row) { return row.status === 'MISSING'; }).length;
+      const decided = submittedCount + missingCount;
+      return { departmentName: dep.name, expected: expected, submitted: submittedCount, missing: missingCount, complianceRate: decided ? Math.round((submittedCount / decided) * 100) : 100 };
     }));
     const missingItems = await Promise.all(missingAttention.map(async function (row) { const owner = await users.findOne({ user_id: row.user_id }); return { id: row.obligation_id, type: 'MISSING_REPORT', title: (row.templateName || 'Report') + ' is missing', owner: owner ? owner.display_name : 'Unassigned', dueAt: row.due_at, severity: 'HIGH' }; }));
     const attention = actionAttention.map(function (a) { return { id: a.action_id, type: 'OVERDUE_ACTION', title: a.title || a.instruction, owner: a.assigneeName, dueAt: a.due_at, severity: a.priority }; }).concat(reviewAttention.map(function (r) { return { id: r.submission_id, type: 'AWAITING_REVIEW', title: r.templateName + ' needs review', owner: r.reporterName, dueAt: r.submitted_at, severity: 'HIGH' }; }), missingItems);
