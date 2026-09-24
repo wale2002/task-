@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <meta name="color-scheme" content="light">
+    <style><?!= include('Styles'); ?></style>
+  </head>
+  <body>
+    <div class="app-shell" id="appShell">
+      <aside class="sidebar" id="sidebar" aria-label="Primary navigation">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">AH</span>
+          <div><strong><?= appName ?></strong><small>Management operations</small></div>
+        </div>
+        <nav id="nav"></nav>
+        <div class="sidebar-footer">
+          <div class="user-avatar" id="userAvatar">--</div>
+          <div class="user-meta"><strong id="userName">Loading…</strong><small id="userRole"></small></div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <button class="icon-button mobile-only" id="menuButton" aria-label="Toggle navigation">☰</button>
+          <div><p class="eyebrow" id="pageEyebrow">Management operations</p><h1 id="pageTitle">Loading</h1></div>
+          <div class="topbar-actions"><span class="live-dot"></span><span id="orgName">Connecting…</span><button class="icon-button" id="refreshButton" aria-label="Refresh current view">↻</button></div>
+        </header>
+        <main id="main" tabindex="-1"><div class="page-loader"><span></span><p>Preparing your workspace…</p></div></main>
+      </div>
+    </div>
+
+    <div class="modal-backdrop hidden" id="modalBackdrop" role="presentation">
+      <section class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <header><div><p class="eyebrow" id="modalEyebrow"></p><h2 id="modalTitle"></h2></div><button class="icon-button" id="modalClose" aria-label="Close dialog">×</button></header>
+        <div class="modal-body" id="modalBody"></div>
+        <footer class="modal-footer" id="modalFooter"></footer>
+      </section>
+    </div>
+    <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+    <script><?!= include('Scripts'); ?></script>
+  </body>
+</html>

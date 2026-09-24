@@ -1,0 +1,15 @@
+node_modules/**
+scripts/**
+tests/**
+.git/**
+.github/**
+.clasp.json
+.clasp.example.json
+.gitignore
+.claspignore
+README.md
+ARCHITECTURE.md
+package.json
+package-lock.json
+coverage/**
+*.log

@@ -1,0 +1,21 @@
+{
+  "scriptId": "REPLACE_WITH_YOUR_APPS_SCRIPT_PROJECT_ID",
+  "rootDir": ".",
+  "filePushOrder": [
+    "Config.js",
+    "Rules.js",
+    "DataStore.js",
+    "Security.js",
+    "AdminService.js",
+    "TemplateService.js",
+    "ReportService.js",
+    "ActionService.js",
+    "NotificationService.js",
+    "DashboardService.js",
+    "Code.js",
+    "Styles.html",
+    "Scripts.html",
+    "Index.html",
+    "appsscript.json"
+  ]
+}

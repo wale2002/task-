@@ -1,0 +1,465 @@
+(function () {
+  'use strict';
+
+  const state = {
+    bootstrap: null, context: null, permissions: {}, options: {},
+    departments: [], users: [], templates: [], route: 'dashboard', builderFields: [],
+  };
+
+  const NAV = [
+    ['dashboard', 'Overview', '▦'], ['reporting', 'My reporting', '▤'], ['reports', 'Report repository', '▧'],
+    ['actions', 'Action tracker', '✓'], ['templates', 'Template builder', '⌘'], ['admin', 'Administration', '⚙'],
+    ['audit', 'Audit trail', '≡'], ['health', 'System health', '◉'],
+  ];
+
+  const $ = function (selector, root) { return (root || document).querySelector(selector); };
+  const $$ = function (selector, root) { return Array.from((root || document).querySelectorAll(selector)); };
+  const esc = function (value) { return String(value === null || value === undefined ? '' : value).replace(/[&<>"']/g, function (char) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]; }); };
+  const attr = esc;
+  const fmtDate = function (value, dateOnly) {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (isNaN(date.getTime())) return esc(value);
+    return new Intl.DateTimeFormat(undefined, dateOnly ? { dateStyle: 'medium' } : { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+  };
+  const dateTimeLocal = function (value) {
+    const date = value ? new Date(value) : new Date(Date.now() + 86400000);
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 16);
+  };
+  const initials = function (name) { return String(name || '?').split(/\s+/).slice(0, 2).map(function (part) { return part[0] || ''; }).join('').toUpperCase(); };
+  const badge = function (status) { return '<span class="badge ' + attr(String(status || '').toLowerCase()) + '">' + esc(String(status || 'Unknown').replace(/_/g, ' ')) + '</span>'; };
+  const empty = function (title, text) { return '<div class="empty"><strong>' + esc(title) + '</strong>' + esc(text) + '</div>'; };
+  const loading = function () { $('#main').innerHTML = '<div class="page-loader"><span></span><p>Loading the latest records…</p></div>'; };
+
+  function rpc(method, payload) {
+    return new Promise(function (resolve, reject) {
+      google.script.run
+        .withSuccessHandler(function (response) {
+          if (response && response.ok) resolve(response.data);
+          else reject(new Error((response && response.error && response.error.message) || 'The request failed.'));
+        })
+        .withFailureHandler(function (error) { reject(new Error((error && error.message) || 'The request failed.')); })
+        .api(method, payload || {});
+    });
+  }
+
+  function toast(message, type) {
+    const node = document.createElement('div');
+    node.className = 'toast ' + (type || '');
+    node.textContent = message;
+    $('#toastRegion').appendChild(node);
+    setTimeout(function () { node.remove(); }, 4200);
+  }
+
+  function handle(error) {
+    console.error(error);
+    toast(error.message || 'Something went wrong.', 'error');
+  }
+
+  function setPage(title, eyebrow) {
+    $('#pageTitle').textContent = title;
+    $('#pageEyebrow').textContent = eyebrow || 'Management operations';
+    document.title = title + ' · ' + state.bootstrap.app.name;
+  }
+
+  function allowedNav(id) {
+    if (id === 'templates') return state.permissions.manageTemplates;
+    if (id === 'admin') return state.permissions.manageUsers || state.permissions.manageDepartments;
+    if (id === 'audit') return state.permissions.viewAudit;
+    if (id === 'health') return state.permissions.viewHealth;
+    return true;
+  }
+
+  function renderNav() {
+    $('#nav').innerHTML = NAV.filter(function (item) { return allowedNav(item[0]); }).map(function (item) {
+      return '<button class="nav-item ' + (state.route === item[0] ? 'active' : '') + '" data-route="' + item[0] + '"><span class="nav-icon" aria-hidden="true">' + item[2] + '</span>' + item[1] + '</button>';
+    }).join('');
+  }
+
+  async function loadCommon() {
+    const result = await Promise.all([
+      rpc('departments'), rpc('users', { activeOnly: true }), rpc('templates', {}),
+    ]);
+    state.departments = result[0]; state.users = result[1]; state.templates = result[2];
+  }
+
+  async function init() {
+    try {
+      state.bootstrap = await rpc('bootstrap');
+      state.context = state.bootstrap.context; state.permissions = state.bootstrap.permissions; state.options = state.bootstrap.options;
+      $('#userName').textContent = state.context.displayName;
+      $('#userRole').textContent = state.context.role.replace(/_/g, ' ');
+      $('#userAvatar').textContent = initials(state.context.displayName);
+      $('#orgName').textContent = state.context.organizationName;
+      await loadCommon();
+      renderNav();
+      await go(location.hash.replace('#', '') || 'dashboard');
+    } catch (error) {
+      $('#main').innerHTML = '<div class="panel"><div class="empty"><strong>Access unavailable</strong>' + esc(error.message) + '<br><br>Ask an administrator to verify your Workspace account and application setup.</div></div>';
+      handle(error);
+    }
+  }
+
+  async function go(route) {
+    if (!NAV.some(function (item) { return item[0] === route; }) || !allowedNav(route)) route = 'dashboard';
+    state.route = route; location.hash = route; renderNav(); loading(); $('#sidebar').classList.remove('open');
+    try {
+      if (route === 'dashboard') await renderDashboard();
+      if (route === 'reporting') await renderReporting();
+      if (route === 'reports') await renderReports();
+      if (route === 'actions') await renderActions();
+      if (route === 'templates') await renderTemplates();
+      if (route === 'admin') await renderAdmin();
+      if (route === 'audit') await renderAudit();
+      if (route === 'health') await renderHealth();
+      $('#main').focus();
+    } catch (error) { handle(error); $('#main').innerHTML = empty('Unable to load this view', error.message); }
+  }
+
+  function departmentOptions(selected, includeAll) {
+    return (includeAll ? '<option value="">All departments</option>' : '<option value="">Choose department</option>') + state.departments.map(function (item) {
+      return '<option value="' + attr(item.department_id) + '" ' + (item.department_id === selected ? 'selected' : '') + '>' + esc(item.name) + '</option>';
+    }).join('');
+  }
+
+  function userOptions(selected, includeEmpty) {
+    return (includeEmpty ? '<option value="">Choose user</option>' : '') + state.users.map(function (item) {
+      return '<option value="' + attr(item.user_id) + '" ' + (item.user_id === selected ? 'selected' : '') + '>' + esc(item.display_name) + ' · ' + esc(item.role) + '</option>';
+    }).join('');
+  }
+
+  function openModal(title, eyebrow, body, footer, large) {
+    $('#modalTitle').textContent = title; $('#modalEyebrow').textContent = eyebrow || '';
+    $('#modalBody').innerHTML = body; $('#modalFooter').innerHTML = footer || '';
+    $('#modal').classList.toggle('large', Boolean(large)); $('#modalBackdrop').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeModal() {
+    $('#modalBackdrop').classList.add('hidden'); document.body.style.overflow = '';
+  }
+
+  async function renderDashboard() {
+    setPage('Executive dashboard', 'Exceptions and compliance');
+    const data = await rpc('dashboard', {});
+    const cardDefs = [
+      ['Expected reports', data.cards.expected, ''], ['Submitted', data.cards.submitted, 'success'],
+      ['Missing', data.cards.missing, 'danger'], ['Awaiting review', data.cards.awaitingReview, 'warning'],
+      ['Open actions', data.cards.openActions, ''], ['Overdue actions', data.cards.overdueActions, 'danger'],
+    ];
+    $('#main').innerHTML = '<div class="page-head"><div><h2>What needs attention</h2><p>A live operational view of reporting compliance, review backlog, and accountable work.</p></div><button class="button" onclick="App.refreshData()">Refresh data</button></div>' +
+      '<section class="cards">' + cardDefs.map(function (card) { return '<article class="metric ' + card[2] + '"><small>' + card[0] + '</small><strong>' + card[1] + '</strong></article>'; }).join('') + '</section>' +
+      '<div class="grid-2"><section class="panel"><div class="panel-header"><h2>Department compliance</h2><span class="muted">Current obligations</span></div><div class="table-wrap">' +
+      (data.compliance.length ? '<table><thead><tr><th>Department</th><th>Expected</th><th>Submitted</th><th>Missing</th><th>Compliance</th></tr></thead><tbody>' + data.compliance.map(function (row) {
+        return '<tr><td class="cell-main">' + esc(row.departmentName) + '</td><td>' + row.expected + '</td><td>' + row.submitted + '</td><td>' + row.missing + '</td><td><div class="inline"><div class="progress"><span style="width:' + row.complianceRate + '%"></span></div><strong>' + row.complianceRate + '%</strong></div></td></tr>';
+      }).join('') + '</tbody></table>' : empty('No compliance data yet', 'Publish and assign a template to begin.')) + '</div></section>' +
+      '<section class="panel"><div class="panel-header"><h2>Needs attention</h2><span class="badge danger">' + data.attention.length + ' items</span></div><div class="panel-body">' +
+      (data.attention.length ? '<div class="attention-list">' + data.attention.map(function (item) {
+        const action = item.type === 'OVERDUE_ACTION' ? 'App.openAction(\'' + item.id + '\')' : (item.type === 'AWAITING_REVIEW' ? 'App.openReport(\'' + item.id + '\')' : 'App.go(\'reporting\')');
+        return '<div class="attention-item" onclick="' + action + '" role="button" tabindex="0"><span class="pin ' + String(item.severity).toLowerCase() + '"></span><div><p>' + esc(item.title) + '</p><small>' + esc(item.type.replace(/_/g, ' ')) + ' · ' + esc(item.owner) + '</small></div><small>' + fmtDate(item.dueAt, true) + '</small></div>';
+      }).join('') + '</div>' : empty('All clear', 'There are no missing, overdue, or review items in scope.')) + '</div></section></div>';
+  }
+
+  async function renderReporting() {
+    setPage('My reporting', 'Assigned obligations');
+    const obligations = await rpc('myObligations');
+    const buckets = [['DUE', 'Due now'], ['RETURNED', 'Returned for clarification'], ['UPCOMING', 'Upcoming'], ['SUBMITTED', 'Submitted']];
+    $('#main').innerHTML = '<div class="page-head"><div><h2>Your reporting calendar</h2><p>Save drafts as you work. Required fields are enforced only when you submit.</p></div></div><div class="obligation-groups">' + buckets.map(function (bucket) {
+      const items = obligations.filter(function (item) { return item.bucket === bucket[0]; });
+      return '<section><div class="inline"><h2>' + bucket[1] + '</h2><span class="badge">' + items.length + '</span></div><div class="obligation-grid">' + (items.length ? items.map(function (item) {
+        return '<article class="obligation-card ' + item.bucket.toLowerCase() + '" onclick="App.openObligation(\'' + item.obligation_id + '\')"><div class="inline">' + badge(item.submissionStatus || item.status) + '</div><h3>' + esc(item.templateName) + '</h3><p>' + esc(item.frequency) + ' · Due ' + fmtDate(item.due_at) + '</p></article>';
+      }).join('') : '<div class="muted">No items in this group.</div>') + '</div></section>';
+    }).join('') + '</div>';
+  }
+
+  function fieldInput(field, value) {
+    const id = 'field_' + field.field_id; const required = String(field.required) === 'true'; const common = ' id="' + id + '" data-field-id="' + attr(field.field_id) + '" ' + (required ? 'required' : '');
+    const label = esc(field.field_name) + (required ? ' *' : '');
+    const type = field.field_type;
+    if (type === 'LONG_TEXT') return '<label class="wide">' + label + '<textarea' + common + '>' + esc(value || '') + '</textarea></label>';
+    if (type === 'DROPDOWN' || ['STATUS', 'PRIORITY', 'EMPLOYEE', 'DEPARTMENT', 'YES_NO'].includes(type)) {
+      let options = JSON.parse(field.options_json || '[]');
+      if (type === 'YES_NO') options = ['YES', 'NO'];
+      if (type === 'PRIORITY') options = state.options.priorities;
+      if (type === 'EMPLOYEE') options = state.users.map(function (user) { return { value: user.user_id, label: user.display_name }; });
+      if (type === 'DEPARTMENT') options = state.departments.map(function (department) { return { value: department.department_id, label: department.name }; });
+      return '<label>' + label + '<select' + common + '><option value="">Choose…</option>' + options.map(function (option) { const v = option.value || option; return '<option value="' + attr(v) + '" ' + (String(value) === String(v) ? 'selected' : '') + '>' + esc(option.label || option) + '</option>'; }).join('') + '</select></label>';
+    }
+    if (type === 'FILE') return '<label>' + label + '<input type="file"' + common + ' data-file-field="true"><span class="hint">Maximum 5 MB per file.</span></label>';
+    const htmlType = ({ NUMBER: 'number', CURRENCY: 'number', PERCENTAGE: 'number', DATE: 'date', TIME: 'time', URL: 'url' })[type] || 'text';
+    return '<label>' + label + '<input type="' + htmlType + '"' + common + ' value="' + attr(value || '') + '" ' + (type === 'PERCENTAGE' ? 'min="0" max="100"' : '') + '></label>';
+  }
+
+  async function openObligation(id) {
+    try {
+      const data = await rpc('reportForm', { obligationId: id });
+      if (data.submission && ['SUBMITTED', 'REVIEWED'].includes(data.submission.status)) return openReport(data.submission.submission_id);
+      openModal(data.template.name, 'Report · ' + data.obligation.period_start + ' to ' + data.obligation.period_end,
+        '<div class="callout">Due ' + fmtDate(data.obligation.due_at) + '. Fields marked * are required for submission.</div><form id="reportForm" class="form-grid section-title">' + data.fields.map(function (field) { return fieldInput(field, data.values[field.field_id]); }).join('') + '</form>' +
+        (data.attachments.length ? '<div class="section-title"><h3>Attached evidence</h3>' + data.attachments.map(function (file) { return '<p><a href="' + attr(file.url) + '" target="_blank" rel="noopener">' + esc(file.label) + '</a></p>'; }).join('') + '</div>' : ''),
+        '<button class="button" onclick="App.closeModal()">Cancel</button><button class="button" onclick="App.saveReport(\'' + id + '\', false)">Save draft</button><button class="button primary" onclick="App.saveReport(\'' + id + '\', true)">Submit report</button>', true);
+    } catch (error) { handle(error); }
+  }
+
+  function readFile(file) {
+    return new Promise(function (resolve, reject) {
+      const reader = new FileReader();
+      reader.onload = function () { resolve({ name: file.name, mimeType: file.type || 'application/octet-stream', base64: String(reader.result).split(',')[1], label: file.name }); };
+      reader.onerror = reject; reader.readAsDataURL(file);
+    });
+  }
+
+  async function saveReport(obligationId, submit) {
+    const form = $('#reportForm');
+    if (submit && !form.reportValidity()) return;
+    const values = {}; const attachments = [];
+    for (const input of $$('[data-field-id]', form)) {
+      if (input.dataset.fileField === 'true') { if (input.files[0]) attachments.push(await readFile(input.files[0])); }
+      else values[input.dataset.fieldId] = input.value;
+    }
+    try {
+      const buttons = $$('.modal-footer button'); buttons.forEach(function (button) { button.disabled = true; });
+      await rpc(submit ? 'submitReport' : 'saveDraft', { obligationId: obligationId, values: values, attachments: attachments });
+      toast(submit ? 'Report submitted for review.' : 'Draft saved.', 'success'); closeModal(); await renderReporting();
+    } catch (error) { handle(error); $$('.modal-footer button').forEach(function (button) { button.disabled = false; }); }
+  }
+
+  async function renderReports(filters) {
+    setPage('Report repository', 'Searchable submission history'); filters = filters || {};
+    const reports = await rpc('reports', filters);
+    $('#main').innerHTML = '<div class="page-head"><div><h2>Reports and review</h2><p>Search authorized submissions and trace each report through review and action.</p></div></div>' +
+      '<div class="filters"><input id="reportQuery" placeholder="Search report, employee, or ID" value="' + attr(filters.query || '') + '"><select id="reportDepartment">' + departmentOptions(filters.departmentId || '', true) + '</select><select id="reportStatus"><option value="">All statuses</option>' + ['DRAFT','SUBMITTED','CLARIFICATION_REQUIRED','REVIEWED'].map(function (value) { return '<option ' + (filters.status === value ? 'selected' : '') + '>' + value + '</option>'; }).join('') + '</select><button class="button" onclick="App.applyReportFilters()">Apply</button></div>' +
+      '<section class="panel"><div class="table-wrap">' + (reports.length ? '<table><thead><tr><th>Report</th><th>Reporter</th><th>Department</th><th>Period</th><th>Status</th><th>Submitted</th></tr></thead><tbody>' + reports.map(function (row) {
+        return '<tr data-open onclick="App.openReport(\'' + row.submission_id + '\')"><td><span class="cell-main">' + esc(row.templateName) + '</span><span class="cell-sub">' + esc(row.submission_id) + '</span></td><td>' + esc(row.reporterName) + '</td><td>' + esc(row.departmentName || '—') + '</td><td>' + esc(row.periodStart || '—') + '</td><td>' + badge(row.status) + '</td><td>' + fmtDate(row.submitted_at) + '</td></tr>';
+      }).join('') + '</tbody></table>' : empty('No reports found', 'Try changing the filters or wait for the first submission.')) + '</div></section>';
+  }
+
+  async function openReport(id) {
+    try {
+      const data = await rpc('report', { submissionId: id });
+      const valueRows = data.fields.map(function (field) {
+        const value = data.values[field.field_id]; const display = value === undefined || value === '' ? '—' : (typeof value === 'object' ? JSON.stringify(value) : value);
+        return '<dt>' + esc(field.field_name) + '</dt><dd>' + esc(display) + '</dd>';
+      }).join('');
+      const reviews = data.reviews.map(function (review) { return '<div class="timeline-item"><p>' + esc(review.decision) + '</p><small>' + fmtDate(review.created_at) + ' · ' + esc(review.comment || 'No comment') + '</small></div>'; }).join('');
+      const linked = data.actions.map(function (action) { return '<button class="button small" onclick="App.openAction(\'' + action.action_id + '\')">' + esc(action.instruction.slice(0, 44)) + '</button>'; }).join('');
+      const footer = '<button class="button" onclick="App.closeModal()">Close</button>' +
+        (state.permissions.createActions && data.submission.status !== 'DRAFT' ? '<button class="button" onclick="App.newAction(\'' + id + '\')">Create action</button>' : '') +
+        (state.permissions.reviewReports && data.submission.status === 'SUBMITTED' ? '<button class="button danger" onclick="App.review(\'' + id + '\',\'RETURN\')">Return</button><button class="button primary" onclick="App.review(\'' + id + '\',\'APPROVE\')">Approve</button>' : '');
+      openModal(data.template ? data.template.name : 'Report', 'Submission · ' + data.submission.submission_id,
+        '<div class="detail-grid"><div><div class="inline">' + badge(data.submission.status) + '<span class="muted">Submitted by ' + esc(data.reporter.display_name) + '</span></div><h3 class="section-title">Report values</h3><dl class="kv">' + valueRows + '</dl>' +
+        (data.attachments.length ? '<h3 class="section-title">Evidence</h3>' + data.attachments.map(function (file) { return '<p><a href="' + attr(file.url) + '" target="_blank" rel="noopener">' + esc(file.label) + '</a></p>'; }).join('') : '') +
+        (linked ? '<h3 class="section-title">Linked actions</h3><div class="actions">' + linked + '</div>' : '') +
+        '</div><aside class="detail-aside"><h3>Review history</h3><div class="timeline">' + (reviews || '<span class="muted">No review events.</span>') + '</div></aside></div>', footer, true);
+    } catch (error) { handle(error); }
+  }
+
+  async function review(id, decision) {
+    const comment = decision === 'RETURN' ? window.prompt('Why is this report being returned?') : window.prompt('Optional review comment:', 'Reviewed and accepted.');
+    if (comment === null || (decision === 'RETURN' && !comment.trim())) return;
+    try { await rpc('reviewReport', { submissionId: id, decision: decision, comment: comment }); toast(decision === 'RETURN' ? 'Report returned.' : 'Report approved.', 'success'); closeModal(); await renderReports(); } catch (error) { handle(error); }
+  }
+
+  async function renderActions(filters) {
+    setPage('Action tracker', 'Accountability lifecycle'); filters = filters || {};
+    const actions = await rpc('actions', filters);
+    $('#main').innerHTML = '<div class="page-head"><div><h2>Actions from instruction to verification</h2><p>Every action remains linked to its source, owner, deadline, evidence, and event history.</p></div>' + (state.permissions.createActions ? '<button class="button primary" onclick="App.newAction()">New action</button>' : '') + '</div>' +
+      '<div class="filters"><input id="actionQuery" placeholder="Search instruction, assignee, or ID"><select id="actionStatus"><option value="">All statuses</option>' + ['ASSIGNED','ACKNOWLEDGED','IN_PROGRESS','COMPLETED','OVERDUE','VERIFIED','CANCELLED'].map(function (value) { return '<option>' + value + '</option>'; }).join('') + '</select><select id="actionPriority"><option value="">All priorities</option>' + state.options.priorities.map(function (value) { return '<option>' + value + '</option>'; }).join('') + '</select><button class="button" onclick="App.applyActionFilters()">Apply</button></div>' +
+      '<section class="panel"><div class="table-wrap">' + (actions.length ? '<table><thead><tr><th>Action</th><th>Assignee</th><th>Department</th><th>Priority</th><th>Due</th><th>Status</th><th>Age</th></tr></thead><tbody>' + actions.map(function (row) {
+        return '<tr data-open onclick="App.openAction(\'' + row.action_id + '\')"><td><span class="cell-main">' + esc(row.instruction.slice(0, 74)) + '</span><span class="cell-sub">' + esc(row.action_id) + '</span></td><td>' + esc(row.assigneeName) + '</td><td>' + esc(row.departmentName || '—') + '</td><td>' + badge(row.priority) + '</td><td>' + fmtDate(row.due_at) + '</td><td>' + badge(row.status) + '</td><td>' + row.ageDays + 'd</td></tr>';
+      }).join('') + '</tbody></table>' : empty('No actions found', 'Create an action from a report or add a standalone instruction.')) + '</div></section>';
+  }
+
+  async function newAction(sourceSubmissionId) {
+    openModal('Create accountable action', sourceSubmissionId ? 'Linked to report' : 'Standalone instruction',
+      '<form id="actionForm" class="form-grid"><label class="wide">Instruction *<textarea id="actionInstruction" required></textarea></label><label>Assignee *<select id="actionAssignee" required>' + userOptions('', true) + '</select></label><label>Verifier<select id="actionVerifier">' + userOptions(state.context.userId, false) + '</select></label><label>Priority<select id="actionPriorityNew">' + state.options.priorities.map(function (value) { return '<option ' + (value === 'MEDIUM' ? 'selected' : '') + '>' + value + '</option>'; }).join('') + '</select></label><label>Deadline *<input type="datetime-local" id="actionDue" value="' + dateTimeLocal() + '" required></label></form>',
+      '<button class="button" onclick="App.closeModal()">Cancel</button><button class="button primary" onclick="App.createAction(\'' + (sourceSubmissionId || '') + '\')">Create action</button>');
+  }
+
+  async function createAction(sourceSubmissionId) {
+    const form = $('#actionForm'); if (!form.reportValidity()) return;
+    try {
+      await rpc('createAction', {
+        sourceSubmissionId: sourceSubmissionId || '', instruction: $('#actionInstruction').value,
+        assignedTo: $('#actionAssignee').value, verifierId: $('#actionVerifier').value,
+        priority: $('#actionPriorityNew').value, dueAt: new Date($('#actionDue').value).toISOString(),
+      });
+      toast('Action assigned and notification queued.', 'success'); closeModal(); await renderActions();
+    } catch (error) { handle(error); }
+  }
+
+  async function openAction(id) {
+    try {
+      const data = await rpc('action', { actionId: id }); const action = data.action;
+      const isAssignee = action.assigned_to === state.context.userId; const manager = state.permissions.createActions;
+      const buttons = [];
+      if (isAssignee && ['ASSIGNED','OVERDUE'].includes(action.status)) buttons.push(['ACKNOWLEDGED','Acknowledge']);
+      if ((isAssignee || manager) && ['ACKNOWLEDGED','OVERDUE'].includes(action.status)) buttons.push(['IN_PROGRESS','Start progress']);
+      if ((isAssignee || manager) && ['ACKNOWLEDGED','IN_PROGRESS','OVERDUE'].includes(action.status)) buttons.push(['COMPLETED','Mark complete']);
+      if (manager && action.status === 'COMPLETED' && action.assigned_to !== state.context.userId) buttons.push(['VERIFIED','Verify']);
+      if (manager && action.status === 'COMPLETED') buttons.push(['IN_PROGRESS','Reopen']);
+      if (manager && !['VERIFIED','CANCELLED'].includes(action.status)) buttons.push(['CANCELLED','Cancel']);
+      const timeline = data.events.map(function (event) { return '<div class="timeline-item"><p>' + esc(event.event_type.replace(/_/g, ' ')) + '</p><small>' + fmtDate(event.created_at) + (event.comment ? ' · ' + esc(event.comment) : '') + (event.evidence_ref ? ' · <a href="' + attr(event.evidence_ref) + '" target="_blank">Evidence</a>' : '') + '</small></div>'; }).join('');
+      openModal('Action details', 'Action · ' + action.action_id,
+        '<div class="detail-grid"><div><div class="inline">' + badge(action.status) + badge(action.priority) + '</div><h2 class="section-title">' + esc(action.instruction) + '</h2><dl class="kv"><dt>Assignee</dt><dd>' + esc(data.assignee.display_name) + '</dd><dt>Created by</dt><dd>' + esc(data.creator.display_name) + '</dd><dt>Verifier</dt><dd>' + esc(data.verifier ? data.verifier.display_name : '—') + '</dd><dt>Due</dt><dd>' + fmtDate(action.due_at) + '</dd><dt>Acknowledged</dt><dd>' + fmtDate(action.acknowledged_at) + '</dd><dt>Completed</dt><dd>' + fmtDate(action.completed_at) + '</dd><dt>Verified</dt><dd>' + fmtDate(action.verified_at) + '</dd></dl></div><aside class="detail-aside"><h3>Event timeline</h3><div class="timeline">' + timeline + '</div></aside></div>',
+        '<button class="button" onclick="App.closeModal()">Close</button>' + buttons.map(function (button) { return '<button class="button ' + (button[0] === 'VERIFIED' ? 'primary' : '') + '" onclick="App.transitionAction(\'' + id + '\',\'' + button[0] + '\')">' + button[1] + '</button>'; }).join(''), true);
+    } catch (error) { handle(error); }
+  }
+
+  async function transitionAction(id, status) {
+    let comment = ''; let evidenceRef = '';
+    if (status === 'COMPLETED') {
+      comment = window.prompt('Completion note or evidence description:') || '';
+      if (!comment) return;
+      evidenceRef = window.prompt('Optional https evidence link:', '') || '';
+    } else if (['IN_PROGRESS','CANCELLED'].includes(status)) {
+      comment = window.prompt('Comment:', '') || '';
+    }
+    try { await rpc('transitionAction', { actionId: id, status: status, comment: comment, evidenceRef: evidenceRef }); toast('Action updated.', 'success'); closeModal(); await renderActions(); } catch (error) { handle(error); }
+  }
+
+  async function renderTemplates() {
+    setPage('Template builder', 'No-code reporting schemas'); await loadCommon();
+    $('#main').innerHTML = '<div class="page-head"><div><h2>Reporting templates</h2><p>Define typed fields, schedules, and assignments without changing code. Published versions are immutable.</p></div><button class="button primary" onclick="App.editTemplate()">New template</button></div>' +
+      '<section class="panel"><div class="table-wrap">' + (state.templates.length ? '<table><thead><tr><th>Template</th><th>Department</th><th>Schedule</th><th>Version</th><th>Fields</th><th>Assignments</th><th>Status</th><th></th></tr></thead><tbody>' + state.templates.map(function (row) {
+        const department = state.departments.find(function (d) { return d.department_id === row.department_id; });
+        return '<tr><td><span class="cell-main">' + esc(row.name) + '</span><span class="cell-sub">' + esc(row.description || row.template_id) + '</span></td><td>' + esc(department ? department.name : '—') + '</td><td>' + esc(row.frequency) + '</td><td>v' + row.version + '</td><td>' + row.fieldCount + '</td><td>' + row.assignmentCount + '</td><td>' + badge(row.status) + '</td><td><div class="actions"><button class="button small" onclick="App.editTemplate(\'' + row.template_id + '\')">' + (row.status === 'ARCHIVED' ? 'View' : 'Edit') + '</button>' + (row.status === 'DRAFT' ? '<button class="button small primary" onclick="App.publishTemplate(\'' + row.template_id + '\')">Publish</button>' : '') + (row.status === 'ACTIVE' ? '<button class="button small" onclick="App.assignTemplate(\'' + row.template_id + '\')">Assign</button><button class="button small danger" onclick="App.archiveTemplate(\'' + row.template_id + '\')">Archive</button>' : '') + '</div></td></tr>';
+      }).join('') + '</tbody></table>' : empty('No templates yet', 'Create the first structured reporting format.')) + '</div></section>';
+  }
+
+  async function editTemplate(id) {
+    let record = { template: { name: '', description: '', department_id: state.context.departmentId || '', frequency: 'WEEKLY', due_rule_json: '{"dueTime":"17:00","weekday":5,"dayOfMonth":28}', status: 'DRAFT' }, fields: [] };
+    if (id) record = await rpc('template', { templateId: id });
+    if (record.template.status === 'ARCHIVED') {
+      toast('Archived versions are read-only.');
+    }
+    state.builderFields = record.fields.map(function (field) { return { fieldName: field.field_name, fieldType: field.field_type, required: String(field.required) === 'true', options: JSON.parse(field.options_json || '[]') }; });
+    if (!state.builderFields.length) state.builderFields = [{ fieldName: '', fieldType: 'TEXT', required: true, options: [] }];
+    const rule = JSON.parse(record.template.due_rule_json || '{}');
+    openModal(id ? 'Edit template version' : 'Create template', 'Schema and schedule',
+      '<form id="templateForm" class="form-grid"><input type="hidden" id="templateId" value="' + attr(id || '') + '"><label>Template name *<input id="templateName" value="' + attr(record.template.name) + '" required></label><label>Department *<select id="templateDepartment" required>' + departmentOptions(record.template.department_id, false) + '</select></label><label>Frequency<select id="templateFrequency">' + state.options.frequencies.map(function (value) { return '<option ' + (record.template.frequency === value ? 'selected' : '') + '>' + value + '</option>'; }).join('') + '</select></label><label>Due time<input type="time" id="templateDueTime" value="' + attr(rule.dueTime || '17:00') + '"></label><label>Weekly due day<select id="templateWeekday">' + [['1','Monday'],['2','Tuesday'],['3','Wednesday'],['4','Thursday'],['5','Friday'],['6','Saturday'],['7','Sunday']].map(function (option) { return '<option value="' + option[0] + '" ' + (String(rule.weekday || 5) === option[0] ? 'selected' : '') + '>' + option[1] + '</option>'; }).join('') + '</select></label><label>Monthly due day<input type="number" min="1" max="31" id="templateMonthDay" value="' + attr(rule.dayOfMonth || 28) + '"></label><label class="wide">Description<textarea id="templateDescription">' + esc(record.template.description || '') + '</textarea></label></form><h3 class="section-title">Fields</h3><div id="fieldBuilder" class="field-builder"></div><button class="button small" onclick="App.addField()">+ Add field</button>',
+      '<button class="button" onclick="App.closeModal()">Cancel</button>' + (record.template.status === 'ARCHIVED' ? '' : '<button class="button primary" onclick="App.saveTemplate()">Save draft</button>'), true);
+    renderFieldBuilder();
+  }
+
+  function renderFieldBuilder() {
+    $('#fieldBuilder').innerHTML = state.builderFields.map(function (field, index) {
+      return '<div class="field-row"><div class="field-order"><button onclick="App.moveField(' + index + ',-1)" aria-label="Move up">▲</button><button onclick="App.moveField(' + index + ',1)" aria-label="Move down">▼</button></div><input aria-label="Field name" value="' + attr(field.fieldName) + '" oninput="App.updateField(' + index + ',\'fieldName\',this.value)"><select aria-label="Field type" onchange="App.updateField(' + index + ',\'fieldType\',this.value)">' + state.options.fieldTypes.map(function (type) { return '<option ' + (type === field.fieldType ? 'selected' : '') + '>' + type + '</option>'; }).join('') + '</select><label class="inline field-required"><input type="checkbox" style="width:auto" ' + (field.required ? 'checked' : '') + ' onchange="App.updateField(' + index + ',\'required\',this.checked)"> Required</label><input class="field-options" aria-label="Dropdown options" placeholder="Options: comma separated" value="' + attr((field.options || []).join(', ')) + '" oninput="App.updateOptions(' + index + ',this.value)" ' + (field.fieldType === 'DROPDOWN' ? '' : 'disabled') + '><button class="icon-button" onclick="App.removeField(' + index + ')" aria-label="Remove field">×</button></div>';
+    }).join('');
+  }
+
+  async function saveTemplate() {
+    const form = $('#templateForm'); if (!form.reportValidity()) return;
+    try {
+      const result = await rpc('saveTemplate', {
+        template: { templateId: $('#templateId').value, name: $('#templateName').value, departmentId: $('#templateDepartment').value, frequency: $('#templateFrequency').value, description: $('#templateDescription').value, dueRule: { dueTime: $('#templateDueTime').value, weekday: Number($('#templateWeekday').value), dayOfMonth: Number($('#templateMonthDay').value) } },
+        fields: state.builderFields,
+      });
+      toast('Template draft saved as version ' + result.template.version + '.', 'success'); closeModal(); await renderTemplates();
+    } catch (error) { handle(error); }
+  }
+
+  async function publishTemplate(id) {
+    try { await rpc('publishTemplate', { templateId: id }); toast('Template published.', 'success'); await renderTemplates(); } catch (error) { handle(error); }
+  }
+
+  async function archiveTemplate(id) {
+    if (!window.confirm('Archive this template and stop future assignments?')) return;
+    try { await rpc('archiveTemplate', { templateId: id }); toast('Template archived.', 'success'); await renderTemplates(); } catch (error) { handle(error); }
+  }
+
+  function assignTemplate(id) {
+    openModal('Assign template', 'Reporting obligation', '<form id="assignmentForm" class="form-grid"><label>Target type<select id="assignmentType" onchange="App.renderAssignmentTarget()"><option>DEPARTMENT</option><option>USER</option><option>ROLE</option></select></label><label>Target<select id="assignmentTarget"></select></label><label>Effective from<input type="date" id="assignmentFrom" value="' + new Date().toISOString().slice(0,10) + '"></label><label>Effective to<input type="date" id="assignmentTo"></label></form>', '<button class="button" onclick="App.closeModal()">Cancel</button><button class="button primary" onclick="App.saveAssignment(\'' + id + '\')">Assign</button>');
+    renderAssignmentTarget();
+  }
+
+  function renderAssignmentTarget() {
+    const type = $('#assignmentType').value; let options = [];
+    if (type === 'DEPARTMENT') options = state.departments.map(function (d) { return [d.department_id, d.name]; });
+    if (type === 'USER') options = state.users.map(function (u) { return [u.user_id, u.display_name]; });
+    if (type === 'ROLE') options = state.options.roles.map(function (r) { return [r, r]; });
+    $('#assignmentTarget').innerHTML = options.map(function (option) { return '<option value="' + attr(option[0]) + '">' + esc(option[1]) + '</option>'; }).join('');
+  }
+
+  async function saveAssignment(templateId) {
+    try {
+      await rpc('saveAssignment', { templateId: templateId, targetType: $('#assignmentType').value, targetId: $('#assignmentTarget').value, effectiveFrom: $('#assignmentFrom').value, effectiveTo: $('#assignmentTo').value });
+      await rpc('generateObligations'); toast('Assignment saved and current obligations generated.', 'success'); closeModal(); await renderTemplates();
+    } catch (error) { handle(error); }
+  }
+
+  async function renderAdmin() {
+    setPage('Administration', 'People, departments, and policy'); await loadCommon();
+    const settings = await rpc('settings'); const map = {}; settings.settings.forEach(function (item) { map[item.key] = item.value; });
+    $('#main').innerHTML = '<div class="page-head"><div><h2>Organization configuration</h2><p>Access is restricted to approved Workspace users. Deactivation takes effect on the next request.</p></div><div class="actions"><button class="button" onclick="App.newDepartment()">Add department</button><button class="button primary" onclick="App.newUser()">Add user</button></div></div>' +
+      '<div class="grid-2"><section class="panel"><div class="panel-header"><h2>Users</h2><span class="badge">' + state.users.length + '</span></div><div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Department</th><th>Status</th><th></th></tr></thead><tbody>' + state.users.map(function (user) { const dep = state.departments.find(function (d) { return d.department_id === user.department_id; }); return '<tr><td><span class="cell-main">' + esc(user.display_name) + '</span><span class="cell-sub">' + esc(user.email) + '</span></td><td>' + badge(user.role) + '</td><td>' + esc(dep ? dep.name : '—') + '</td><td>' + badge(String(user.active) === 'true' ? 'ACTIVE' : 'INACTIVE') + '</td><td><button class="button small" onclick="App.newUser(\'' + user.user_id + '\')">Edit</button></td></tr>'; }).join('') + '</tbody></table></div></section>' +
+      '<section class="panel"><div class="panel-header"><h2>Departments</h2><span class="badge">' + state.departments.length + '</span></div><div class="table-wrap"><table><thead><tr><th>Department</th><th>Head</th><th>Status</th><th></th></tr></thead><tbody>' + state.departments.map(function (dep) { const hod = state.users.find(function (u) { return u.user_id === dep.hod_user_id; }); return '<tr><td class="cell-main">' + esc(dep.name) + '</td><td>' + esc(hod ? hod.display_name : '—') + '</td><td>' + badge(String(dep.active) === 'true' ? 'ACTIVE' : 'INACTIVE') + '</td><td><button class="button small" onclick="App.newDepartment(\'' + dep.department_id + '\')">Edit</button></td></tr>'; }).join('') + '</tbody></table></div></section></div>' +
+      '<section class="panel" style="margin-top:18px"><div class="panel-header"><h2>Automation policy</h2><span class="muted">Triggers: ' + esc(settings.automationInstalled.join(', ') || 'Not installed') + '</span></div><div class="panel-body"><form id="settingsForm" class="form-grid"><label>Acknowledgement SLA (hours)<input type="number" id="setAck" value="' + attr(map.ACKNOWLEDGEMENT_SLA_HOURS || 24) + '"></label><label>Due-soon window (hours)<input type="number" id="setDue" value="' + attr(map.DUE_SOON_HOURS || 24) + '"></label><label>Escalation level 2 (hours overdue)<input type="number" id="setL2" value="' + attr(map.ESCALATION_LEVEL_2_HOURS || 72) + '"></label><label>Escalation level 3 (hours overdue)<input type="number" id="setL3" value="' + attr(map.ESCALATION_LEVEL_3_HOURS || 168) + '"></label><label class="wide">Retention policy<input id="setRetention" value="' + attr(map.RETENTION_POLICY || '') + '"></label></form><div class="actions" style="margin-top:14px"><button class="button primary" onclick="App.saveSettings()">Save policy</button></div></div></section>';
+  }
+
+  function newDepartment(id) {
+    const dep = state.departments.find(function (item) { return item.department_id === id; }) || { name: '', hod_user_id: '', active: true };
+    openModal(id ? 'Edit department' : 'Add department', 'Organization structure', '<form id="departmentForm" class="form-grid"><label>Department name *<input id="departmentName" value="' + attr(dep.name) + '" required></label><label>Head of department<select id="departmentHod"><option value="">Not assigned</option>' + userOptions(dep.hod_user_id, false) + '</select></label><label class="inline"><input type="checkbox" style="width:auto" id="departmentActive" ' + (String(dep.active) !== 'false' ? 'checked' : '') + '> Active</label></form>', '<button class="button" onclick="App.closeModal()">Cancel</button><button class="button primary" onclick="App.saveDepartment(\'' + (id || '') + '\')">Save</button>');
+  }
+
+  async function saveDepartment(id) {
+    if (!$('#departmentForm').reportValidity()) return;
+    try { await rpc('saveDepartment', { departmentId: id, name: $('#departmentName').value, hodUserId: $('#departmentHod').value, active: $('#departmentActive').checked }); toast('Department saved.', 'success'); closeModal(); await renderAdmin(); } catch (error) { handle(error); }
+  }
+
+  function newUser(id) {
+    const user = state.users.find(function (item) { return item.user_id === id; }) || { display_name: '', email: '', department_id: '', role: 'EMPLOYEE', manager_user_id: '', active: true };
+    openModal(id ? 'Edit user' : 'Add user', 'Access and responsibility', '<form id="userForm" class="form-grid"><label>Name *<input id="newUserName" value="' + attr(user.display_name) + '" required></label><label>Workspace email *<input type="email" id="newUserEmail" value="' + attr(user.email) + '" required></label><label>Role<select id="newUserRole">' + state.options.roles.map(function (role) { return '<option ' + (role === user.role ? 'selected' : '') + '>' + role + '</option>'; }).join('') + '</select></label><label>Department<select id="newUserDepartment">' + departmentOptions(user.department_id, false) + '</select></label><label>Manager<select id="newUserManager"><option value="">Not assigned</option>' + userOptions(user.manager_user_id, false) + '</select></label><label class="inline"><input type="checkbox" style="width:auto" id="newUserActive" ' + (String(user.active) !== 'false' ? 'checked' : '') + '> Active</label></form>', '<button class="button" onclick="App.closeModal()">Cancel</button><button class="button primary" onclick="App.saveUser(\'' + (id || '') + '\')">Save user</button>');
+  }
+
+  async function saveUser(id) {
+    if (!$('#userForm').reportValidity()) return;
+    try { await rpc('saveUser', { userId: id, displayName: $('#newUserName').value, email: $('#newUserEmail').value, role: $('#newUserRole').value, departmentId: $('#newUserDepartment').value, managerUserId: $('#newUserManager').value, active: $('#newUserActive').checked }); toast('User saved.', 'success'); closeModal(); await renderAdmin(); } catch (error) { handle(error); }
+  }
+
+  async function saveSettings() {
+    try { await rpc('saveSettings', { settings: { ACKNOWLEDGEMENT_SLA_HOURS: $('#setAck').value, DUE_SOON_HOURS: $('#setDue').value, ESCALATION_LEVEL_2_HOURS: $('#setL2').value, ESCALATION_LEVEL_3_HOURS: $('#setL3').value, RETENTION_POLICY: $('#setRetention').value } }); toast('Automation policy saved.', 'success'); } catch (error) { handle(error); }
+  }
+
+  async function renderAudit() {
+    setPage('Audit trail', 'Append-only state history');
+    const events = await rpc('audit', { limit: 300 });
+    $('#main').innerHTML = '<div class="page-head"><div><h2>Business event history</h2><p>Every material state change records actor, entity, transition, and timestamp.</p></div></div><section class="panel"><div class="table-wrap">' + (events.length ? '<table><thead><tr><th>When</th><th>Event</th><th>Entity</th><th>Actor</th><th>ID</th></tr></thead><tbody>' + events.map(function (event) { const user = state.users.find(function (u) { return u.user_id === event.actor_id; }); return '<tr><td>' + fmtDate(event.created_at) + '</td><td>' + badge(event.event_type) + '</td><td>' + esc(event.entity_type) + '</td><td>' + esc(user ? user.display_name : event.actor_id) + '</td><td class="cell-sub">' + esc(event.entity_id) + '</td></tr>'; }).join('') + '</tbody></table>' : empty('No audit events yet', 'Events appear as users configure and operate the platform.')) + '</div></section>';
+  }
+
+  async function renderHealth() {
+    setPage('System health', 'Automation and delivery');
+    const health = await rpc('health'); const statuses = Object.keys(health.notifications);
+    $('#main').innerHTML = '<div class="page-head"><div><h2>Notification and trigger health</h2><p>Failed outbox jobs remain inspectable and retryable. Quotas are checked at runtime.</p></div></div><section class="cards">' + statuses.map(function (status) { return '<article class="metric ' + (status === 'FAILED' ? 'danger' : status === 'SENT' ? 'success' : 'warning') + '"><small>' + esc(status) + ' notifications</small><strong>' + health.notifications[status] + '</strong></article>'; }).join('') + '<article class="metric"><small>Mail quota remaining</small><strong>' + health.mailQuotaRemaining + '</strong></article></section><div class="grid-2"><section class="panel"><div class="panel-header"><h2>Installed triggers</h2></div><div class="panel-body">' + (health.triggers.length ? health.triggers.map(function (trigger) { return '<p><strong>' + esc(trigger.handler) + '</strong><br><span class="muted">' + esc(trigger.source) + '</span></p>'; }).join('') : empty('No triggers', 'Run installAutomation() as the deployment owner.')) + '</div></section><section class="panel"><div class="panel-header"><h2>Failed notifications</h2></div><div class="panel-body">' + (health.failed.length ? health.failed.map(function (job) { return '<div class="attention-item"><span class="pin high"></span><div><p>' + esc(job.template_key) + '</p><small>' + esc(job.recipient) + ' · ' + esc(job.last_error) + '</small></div><button class="button small" onclick="App.retryNotification(\'' + job.notification_id + '\')">Retry</button></div>'; }).join('') : empty('No delivery failures', 'The outbox is healthy.')) + '</div></section></div>';
+  }
+
+  const App = {
+    go: go, closeModal: closeModal, openObligation: openObligation, saveReport: saveReport,
+    applyReportFilters: function () { renderReports({ query: $('#reportQuery').value, departmentId: $('#reportDepartment').value, status: $('#reportStatus').value }); },
+    openReport: openReport, review: review, newAction: newAction, createAction: createAction, openAction: openAction, transitionAction: transitionAction,
+    applyActionFilters: function () { renderActions({ query: $('#actionQuery').value, status: $('#actionStatus').value, priority: $('#actionPriority').value }); },
+    editTemplate: editTemplate, saveTemplate: saveTemplate, publishTemplate: publishTemplate, archiveTemplate: archiveTemplate,
+    addField: function () { state.builderFields.push({ fieldName: '', fieldType: 'TEXT', required: false, options: [] }); renderFieldBuilder(); },
+    removeField: function (index) { if (state.builderFields.length > 1) state.builderFields.splice(index, 1); renderFieldBuilder(); },
+    moveField: function (index, direction) { const to = index + direction; if (to < 0 || to >= state.builderFields.length) return; const field = state.builderFields.splice(index, 1)[0]; state.builderFields.splice(to, 0, field); renderFieldBuilder(); },
+    updateField: function (index, key, value) { state.builderFields[index][key] = value; if (key === 'fieldType') renderFieldBuilder(); },
+    updateOptions: function (index, value) { state.builderFields[index].options = value.split(',').map(function (item) { return item.trim(); }).filter(Boolean); },
+    assignTemplate: assignTemplate, renderAssignmentTarget: renderAssignmentTarget, saveAssignment: saveAssignment,
+    newDepartment: newDepartment, saveDepartment: saveDepartment, newUser: newUser, saveUser: saveUser, saveSettings: saveSettings,
+    retryNotification: async function (id) { try { await rpc('retryNotification', { notificationId: id }); toast('Notification queued for retry.', 'success'); await renderHealth(); } catch (error) { handle(error); } },
+    refreshData: async function () { try { await loadCommon(); await go(state.route); toast('Data refreshed.', 'success'); } catch (error) { handle(error); } },
+  };
+  window.App = App;
+
+  document.addEventListener('click', function (event) {
+    const nav = event.target.closest('[data-route]'); if (nav) go(nav.dataset.route);
+  });
+  $('#menuButton').addEventListener('click', function () { $('#sidebar').classList.toggle('open'); });
+  $('#refreshButton').addEventListener('click', function () { App.refreshData(); });
+  $('#modalClose').addEventListener('click', closeModal);
+  $('#modalBackdrop').addEventListener('click', function (event) { if (event.target === $('#modalBackdrop')) closeModal(); });
+  document.addEventListener('keydown', function (event) { if (event.key === 'Escape') closeModal(); });
+  window.addEventListener('hashchange', function () { const route = location.hash.replace('#', ''); if (route && route !== state.route) go(route); });
+  init();
+}());
