@@ -4,6 +4,7 @@ const { MongoClient, ServerApiVersion } = require('mongodb');
 
 const DATABASE_NAME = process.env.MONGODB_DATABASE || 'accountability_hub';
 const TEST_USER_ID = 'USR-CEO';
+const MAX_UPLOAD_BYTES = 3 * 1024 * 1024;
 const OPTIONS = {
   roles: ['EMPLOYEE', 'HOD', 'HR', 'CEO', 'ADMIN'],
   priorities: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'],
@@ -53,14 +54,14 @@ async function ensureIndexes(db) {
     db.collection('actions').createIndex({ status: 1, due_at: 1 }),
     db.collection('submissions').createIndex({ status: 1, department_id: 1 }),
     db.collection('notifications').createIndex({ status: 1, created_at: 1 }),
+    db.collection('notifications').createIndex({ event_key: 1 }, { unique: true, sparse: true }),
     db.collection('audit_events').createIndex({ created_at: -1 }),
+    db.collection('action_comments').createIndex({ action_id: 1, created_at: 1 }),
+    db.collection('files').createIndex({ file_id: 1 }, { unique: true }),
   ]);
 }
 
 async function ensureTestData(db) {
-  const marker = await db.collection('settings').findOne({ _id: 'TEST_DATA_VERSION' });
-  if (marker && marker.value === '1') return;
-
   const departments = [
     { department_id: 'DEP-OPS', name: 'Operations', hod_user_id: 'USR-AMAKA', active: true },
     { department_id: 'DEP-FIN', name: 'Finance', hod_user_id: 'USR-TUNDE', active: true },
@@ -91,9 +92,9 @@ async function ensureTestData(db) {
     { submission_id: 'RPT-1037', template_id: 'TPL-WEEKLY', templateName: 'Weekly Operations Report', reporter_id: 'USR-AMAKA', reporterName: 'Amaka Okafor', department_id: 'DEP-OPS', departmentName: 'Operations', periodStart: '2026-09-07', status: 'CLARIFICATION_REQUIRED', submitted_at: isoAt(-9), values: { 'FLD-SUMMARY': 'Prior week operating update.', 'FLD-STATUS': 'AT_RISK', 'FLD-PROGRESS': '65', 'FLD-RISK': 'Evidence requires clarification.' }, attachments: [], reviews: [{ decision: 'RETURN', created_at: isoAt(-8), comment: 'Please attach reconciliation evidence.' }], action_ids: [] },
   ];
   const actions = [
-    { action_id: 'ACT-208', instruction: 'Resolve the recurring dispatch reconciliation gap and attach evidence', assigned_to: 'USR-AMAKA', assigneeName: 'Amaka Okafor', department_id: 'DEP-OPS', departmentName: 'Operations', priority: 'CRITICAL', due_at: isoAt(-1, 12), status: 'OVERDUE', created_at: isoAt(-5), created_by: TEST_USER_ID, verifier_id: TEST_USER_ID, source_submission_id: 'RPT-1048' },
-    { action_id: 'ACT-204', instruction: 'Confirm recovery plan for overdue enterprise receivables', assigned_to: 'USR-TUNDE', assigneeName: 'Tunde Balogun', department_id: 'DEP-FIN', departmentName: 'Finance', priority: 'HIGH', due_at: isoAt(1), status: 'IN_PROGRESS', created_at: isoAt(-3), acknowledged_at: isoAt(-2), created_by: TEST_USER_ID, verifier_id: TEST_USER_ID },
-    { action_id: 'ACT-197', instruction: 'Publish the September hiring and capacity forecast', assigned_to: 'USR-NGOZI', assigneeName: 'Ngozi Eze', department_id: 'DEP-HR', departmentName: 'People & Culture', priority: 'MEDIUM', due_at: isoAt(3), status: 'ACKNOWLEDGED', created_at: isoAt(-2), acknowledged_at: isoAt(-1), created_by: TEST_USER_ID, verifier_id: TEST_USER_ID },
+    { action_id: 'ACT-208', title: 'Resolve dispatch reconciliation gap', description: 'Resolve the recurring dispatch reconciliation gap and attach evidence.', instruction: 'Resolve dispatch reconciliation gap', evidence_required: true, assigned_to: 'USR-AMAKA', assigneeName: 'Amaka Okafor', department_id: 'DEP-OPS', departmentName: 'Operations', priority: 'CRITICAL', due_at: isoAt(-1, 12), status: 'OVERDUE', created_at: isoAt(-5), created_by: TEST_USER_ID, verifier_id: TEST_USER_ID, source_submission_id: 'RPT-1048' },
+    { action_id: 'ACT-204', title: 'Confirm receivables recovery plan', description: 'Confirm recovery plan for overdue enterprise receivables.', instruction: 'Confirm receivables recovery plan', evidence_required: false, assigned_to: 'USR-TUNDE', assigneeName: 'Tunde Balogun', department_id: 'DEP-FIN', departmentName: 'Finance', priority: 'HIGH', due_at: isoAt(1), status: 'IN_PROGRESS', created_at: isoAt(-3), acknowledged_at: isoAt(-2), created_by: TEST_USER_ID, verifier_id: TEST_USER_ID },
+    { action_id: 'ACT-197', title: 'Publish capacity forecast', description: 'Publish the September hiring and capacity forecast.', instruction: 'Publish capacity forecast', evidence_required: true, assigned_to: 'USR-NGOZI', assigneeName: 'Ngozi Eze', department_id: 'DEP-HR', departmentName: 'People & Culture', priority: 'MEDIUM', due_at: isoAt(3), status: 'ACKNOWLEDGED', created_at: isoAt(-2), acknowledged_at: isoAt(-1), created_by: TEST_USER_ID, verifier_id: TEST_USER_ID },
   ];
   const obligations = [
     { obligation_id: 'OBL-301', bucket: 'DUE', template_id: 'TPL-WEEKLY', templateName: 'Weekly Operations Report', frequency: 'WEEKLY', due_at: isoAt(1), status: 'OPEN', user_id: TEST_USER_ID, period_start: '2026-09-21', period_end: '2026-09-27' },
@@ -117,12 +118,13 @@ async function ensureTestData(db) {
         { created_at: isoAt(-3), event_type: 'REPORT_REVIEWED', entity_type: 'SUBMISSION', actor_id: TEST_USER_ID, entity_id: 'RPT-1044' },
       ]),
       db.collection('notifications').insertMany([
-        { notification_id: 'NTF-TEST-1', template_key: 'REPORT_DUE', recipient: 'amaka@example.com', entity_id: 'OBL-301', status: 'QUEUED', created_at: new Date(), attempts: 0 },
-        { notification_id: 'NTF-TEST-2', template_key: 'ACTION_OVERDUE', recipient: 'amaka@example.com', entity_id: 'ACT-208', status: 'QUEUED', created_at: new Date(), attempts: 0 },
+        { notification_id: 'NTF-TEST-1', event_key: 'REPORT_DUE:OBL-301:amaka@example.com', template_key: 'REPORT_DUE', recipient: 'amaka@example.com', entity_id: 'OBL-301', payload: { templateName: 'Weekly Operations Report', period: '2026-09-21 to 2026-09-27' }, status: 'QUEUED', created_at: new Date(), attempts: 0 },
+        { notification_id: 'NTF-TEST-2', event_key: 'ACTION_OVERDUE:ACT-208:LEVEL_1:amaka@example.com', template_key: 'ACTION_OVERDUE', recipient: 'amaka@example.com', entity_id: 'ACT-208', payload: { title: 'Resolve dispatch reconciliation gap', assigneeName: 'Amaka Okafor', priority: 'CRITICAL' }, status: 'QUEUED', created_at: new Date(), attempts: 0 },
       ]),
     ]);
   }
-  await db.collection('settings').updateOne({ _id: 'TEST_DATA_VERSION' }, { $set: { value: '1', updated_at: new Date() } }, { upsert: true });
+  await db.collection('settings').updateOne({ _id: 'TEST_DATA_VERSION' }, { $set: { value: '2', updated_at: new Date() } }, { upsert: true });
+  await db.collection('actions').updateMany({ title: { $exists: false } }, [{ $set: { title: '$instruction', description: '$instruction', evidence_required: false } }]);
   await Promise.all([
     ['ACKNOWLEDGEMENT_SLA_HOURS', '24'], ['DUE_SOON_HOURS', '24'], ['ESCALATION_LEVEL_2_HOURS', '72'],
     ['ESCALATION_LEVEL_3_HOURS', '168'], ['RETENTION_POLICY', 'Operational records retained for 7 years.'],
@@ -130,12 +132,90 @@ async function ensureTestData(db) {
   await ensureIndexes(db);
 }
 
-async function enqueue(db, templateKey, recipient, entityId) {
-  await db.collection('notifications').insertOne({ notification_id: id('NTF'), template_key: templateKey, recipient: recipient, entity_id: entityId, status: 'QUEUED', created_at: new Date(), attempts: 0 });
+async function enqueue(db, templateKey, recipient, entityId, payload, stage) {
+  const normalizedRecipient = String(recipient || '').trim().toLowerCase();
+  if (!normalizedRecipient) return;
+  const eventKey = [templateKey, entityId, stage || 'ONCE', normalizedRecipient].join(':');
+  await db.collection('notifications').updateOne({ event_key: eventKey }, { $setOnInsert: {
+    notification_id: id('NTF'), event_key: eventKey, template_key: templateKey, recipient: normalizedRecipient,
+    entity_id: entityId, payload: payload || {}, status: 'QUEUED', created_at: new Date(), attempts: 0,
+  } }, { upsert: true });
 }
 
-async function audit(db, eventType, entityType, entityId, actorId) {
-  await db.collection('audit_events').insertOne({ created_at: new Date(), event_type: eventType, entity_type: entityType, actor_id: actorId || TEST_USER_ID, entity_id: entityId });
+async function audit(db, eventType, entityType, entityId, actorId, details) {
+  await db.collection('audit_events').insertOne({ created_at: new Date(), event_type: eventType, entity_type: entityType, actor_id: actorId || TEST_USER_ID, entity_id: entityId, details: details || {} });
+}
+
+function transitionAllowed(fromStatus, toStatus) {
+  const transitions = {
+    ASSIGNED: ['ACKNOWLEDGED', 'OVERDUE', 'CANCELLED'],
+    ACKNOWLEDGED: ['IN_PROGRESS', 'COMPLETED', 'OVERDUE', 'CANCELLED'],
+    IN_PROGRESS: ['COMPLETED', 'OVERDUE', 'CANCELLED'],
+    OVERDUE: ['ACKNOWLEDGED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'],
+    COMPLETED: ['VERIFIED', 'IN_PROGRESS'],
+    VERIFIED: [], CANCELLED: [],
+  };
+  return Boolean(transitions[fromStatus] && transitions[fromStatus].includes(toStatus));
+}
+
+async function saveFile(db, file, ownerId, entityType, entityId) {
+  if (!file || !file.base64) return '';
+  const data = Buffer.from(String(file.base64), 'base64');
+  if (!data.length || data.length > MAX_UPLOAD_BYTES) throw new Error('Evidence files must be 3 MB or smaller.');
+  const mimeType = String(file.mimeType || 'application/octet-stream').slice(0, 120);
+  if (/text\/html|image\/svg\+xml|javascript/i.test(mimeType)) throw new Error('That evidence file type is not allowed.');
+  const fileId = id('FILE');
+  await db.collection('files').insertOne({ file_id: fileId, name: String(file.name || 'evidence').slice(0, 180), mime_type: mimeType, size: data.length, data: data, owner_id: ownerId, entity_type: entityType, entity_id: entityId, created_at: new Date() });
+  return '/api/file?id=' + encodeURIComponent(fileId);
+}
+
+async function automationSweep(db) {
+  const now = new Date();
+  const settings = await db.collection('settings').find({ _id: { $in: ['ACKNOWLEDGEMENT_SLA_HOURS', 'DUE_SOON_HOURS', 'ESCALATION_LEVEL_2_HOURS', 'ESCALATION_LEVEL_3_HOURS'] } }).toArray();
+  const policy = {}; settings.forEach(function (row) { policy[row._id] = Number(row.value); });
+  const ackHours = policy.ACKNOWLEDGEMENT_SLA_HOURS || 24;
+  const dueSoonHours = policy.DUE_SOON_HOURS || 24;
+  const level2Hours = policy.ESCALATION_LEVEL_2_HOURS || 72;
+  const level3Hours = policy.ESCALATION_LEVEL_3_HOURS || 168;
+  const users = db.collection('users');
+  const actions = db.collection('actions');
+  const active = await actions.find({ status: { $in: ['ASSIGNED', 'ACKNOWLEDGED', 'IN_PROGRESS', 'OVERDUE'] } }).toArray();
+  for (const action of active) {
+    const assignee = await users.findOne({ user_id: action.assigned_to });
+    if (!assignee) continue;
+    const title = action.title || action.instruction;
+    const ageHours = (now - new Date(action.created_at)) / 3600000;
+    if (!action.acknowledged_at && ageHours >= ackHours) await enqueue(db, 'ACTION_UNACKNOWLEDGED', assignee.email, action.action_id, { recipientName: assignee.display_name, title: title, dueAt: action.due_at }, ackHours + 'H');
+    const dueAt = new Date(action.due_at);
+    const untilDue = (dueAt - now) / 3600000;
+    if (untilDue >= 0 && untilDue <= dueSoonHours) await enqueue(db, 'ACTION_DUE_SOON', assignee.email, action.action_id, { recipientName: assignee.display_name, title: title, dueAt: action.due_at }, dueSoonHours + 'H');
+    if (dueAt >= now) continue;
+    if (action.status !== 'OVERDUE') {
+      await actions.updateOne({ action_id: action.action_id }, { $set: { status: 'OVERDUE', updated_at: now } });
+      await db.collection('action_events').insertOne({ action_id: action.action_id, event_type: 'OVERDUE', created_at: now, actor_id: 'SYSTEM', comment: 'Deadline passed.' });
+      await audit(db, 'ACTION_OVERDUE', 'ACTION', action.action_id, 'SYSTEM');
+    }
+    const overdueHours = (now - dueAt) / 3600000;
+    const stage = overdueHours >= level3Hours ? 'LEVEL_3' : (overdueHours >= level2Hours ? 'LEVEL_2' : 'LEVEL_1');
+    const recipients = [assignee];
+    if (assignee.manager_user_id) recipients.push(await users.findOne({ user_id: assignee.manager_user_id }));
+    const department = await db.collection('departments').findOne({ department_id: assignee.department_id });
+    if ((stage === 'LEVEL_2' || stage === 'LEVEL_3') && department && department.hod_user_id) recipients.push(await users.findOne({ user_id: department.hod_user_id }));
+    if (stage === 'LEVEL_3') recipients.push.apply(recipients, await users.find({ role: { $in: ['CEO', 'ADMIN'] }, active: true }).toArray());
+    const seen = new Set();
+    for (const recipient of recipients.filter(Boolean)) {
+      if (seen.has(recipient.email)) continue;
+      seen.add(recipient.email);
+      await enqueue(db, 'ACTION_OVERDUE', recipient.email, action.action_id, { recipientName: recipient.display_name, title: title, assigneeName: assignee.display_name, priority: action.priority, dueAt: action.due_at, stage: stage }, stage);
+    }
+  }
+  const missing = await db.collection('obligations').find({ status: { $in: ['OPEN', 'DUE', 'UPCOMING'] }, due_at: { $lt: now } }).toArray();
+  for (const obligation of missing) {
+    await db.collection('obligations').updateOne({ obligation_id: obligation.obligation_id }, { $set: { status: 'MISSING', bucket: 'DUE', updated_at: now } });
+    const owner = await users.findOne({ user_id: obligation.user_id });
+    if (owner) await enqueue(db, 'REPORT_MISSING', owner.email, obligation.obligation_id, { recipientName: owner.display_name, templateName: obligation.templateName, period: obligation.period_start + ' to ' + obligation.period_end, dueAt: obligation.due_at }, 'ONCE');
+  }
+  return { evaluatedActions: active.length, missingReports: missing.length, ranAt: now.toISOString() };
 }
 
 async function dispatch(db, method, payload) {
@@ -145,24 +225,30 @@ async function dispatch(db, method, payload) {
   const submissions = db.collection('submissions');
   const actions = db.collection('actions');
 
-  if (method === 'bootstrap') return { app: { name: 'Accountability Hub' }, context: { userId: TEST_USER_ID, displayName: 'Adewusi Oluwaferanmi', role: 'CEO', departmentId: 'DEP-OPS', organizationName: 'Management Accountability Office · MongoDB test' }, permissions: PERMISSIONS, options: OPTIONS };
+  if (method === 'bootstrap') return { app: { name: 'Accountability Hub' }, context: { userId: TEST_USER_ID, displayName: 'Adewusi Oluwaferanmi', role: 'CEO', departmentId: 'DEP-OPS', organizationName: 'Accountability Hub · Pilot workspace' }, permissions: PERMISSIONS, options: OPTIONS };
   if (method === 'departments') return departments.find(payload.activeOnly ? { active: true } : {}).sort({ name: 1 }).toArray();
   if (method === 'users') return users.find(payload.activeOnly ? { active: true } : {}).sort({ display_name: 1 }).toArray();
   if (method === 'templates') return templates.find({}).sort({ name: 1 }).project({ fields: 0 }).toArray();
   if (method === 'dashboard') {
-    const [obligationCount, submitted, missing, awaitingReview, openActions, overdueActions, actionAttention, reviewAttention] = await Promise.all([
-      db.collection('obligations').countDocuments({}), submissions.countDocuments({ status: { $in: ['SUBMITTED', 'REVIEWED', 'CLARIFICATION_REQUIRED'] } }),
+    await automationSweep(db);
+    const [obligationCount, submitted, missing, awaitingReview, openActions, overdueActions, actionAttention, reviewAttention, missingAttention] = await Promise.all([
+      db.collection('obligations').countDocuments({}), db.collection('obligations').countDocuments({ status: 'SUBMITTED' }),
       db.collection('obligations').countDocuments({ status: 'MISSING' }), submissions.countDocuments({ status: 'SUBMITTED' }),
       actions.countDocuments({ status: { $nin: ['VERIFIED', 'CANCELLED'] } }), actions.countDocuments({ status: 'OVERDUE' }),
-      actions.find({ status: 'OVERDUE' }).limit(5).toArray(), submissions.find({ status: 'SUBMITTED' }).limit(5).toArray(),
+      actions.find({ status: 'OVERDUE' }).limit(5).toArray(), submissions.find({ status: 'SUBMITTED' }).limit(5).toArray(), db.collection('obligations').find({ status: 'MISSING' }).limit(5).toArray(),
     ]);
     const deps = await departments.find({ active: true }).toArray();
     const compliance = await Promise.all(deps.map(async function (dep) {
-      const expected = await db.collection('obligations').countDocuments({ department_id: dep.department_id });
+      const departmentUsers = await users.find({ department_id: dep.department_id }).project({ user_id: 1 }).toArray();
+      const userIds = departmentUsers.map(function (user) { return user.user_id; });
+      const expected = userIds.length ? await db.collection('obligations').countDocuments({ user_id: { $in: userIds } }) : 0;
       const submittedCount = await submissions.countDocuments({ department_id: dep.department_id, status: { $in: ['SUBMITTED', 'REVIEWED', 'CLARIFICATION_REQUIRED'] } });
-      return { departmentName: dep.name, expected: expected || (dep.department_id === 'DEP-OPS' ? 5 : 4), submitted: submittedCount || (dep.department_id === 'DEP-FIN' ? 4 : 3), missing: Math.max(0, (expected || 4) - submittedCount), complianceRate: Math.min(100, Math.round(((submittedCount || 3) / (expected || 4)) * 100)) };
+      return { departmentName: dep.name, expected: expected, submitted: submittedCount, missing: Math.max(0, expected - submittedCount), complianceRate: expected ? Math.min(100, Math.round((submittedCount / expected) * 100)) : 100 };
     }));
-    return { cards: { expected: obligationCount || 18, submitted: submitted || 14, missing: missing || 2, awaitingReview: awaitingReview, openActions: openActions, overdueActions: overdueActions }, compliance: compliance, attention: actionAttention.map(function (a) { return { id: a.action_id, type: 'OVERDUE_ACTION', title: a.instruction, owner: a.assigneeName, dueAt: a.due_at, severity: a.priority }; }).concat(reviewAttention.map(function (r) { return { id: r.submission_id, type: 'AWAITING_REVIEW', title: r.templateName + ' needs review', owner: r.reporterName, dueAt: r.submitted_at, severity: 'HIGH' }; })).slice(0, 8) };
+    const missingItems = await Promise.all(missingAttention.map(async function (row) { const owner = await users.findOne({ user_id: row.user_id }); return { id: row.obligation_id, type: 'MISSING_REPORT', title: (row.templateName || 'Report') + ' is missing', owner: owner ? owner.display_name : 'Unassigned', dueAt: row.due_at, severity: 'HIGH' }; }));
+    const attention = actionAttention.map(function (a) { return { id: a.action_id, type: 'OVERDUE_ACTION', title: a.title || a.instruction, owner: a.assigneeName, dueAt: a.due_at, severity: a.priority }; }).concat(reviewAttention.map(function (r) { return { id: r.submission_id, type: 'AWAITING_REVIEW', title: r.templateName + ' needs review', owner: r.reporterName, dueAt: r.submitted_at, severity: 'HIGH' }; }), missingItems);
+    attention.sort(function (a, b) { const ranks = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }; return (ranks[a.severity] || 9) - (ranks[b.severity] || 9) || new Date(a.dueAt) - new Date(b.dueAt); });
+    return { cards: { expected: obligationCount, submitted: submitted, missing: missing, awaitingReview: awaitingReview, openActions: openActions, overdueActions: overdueActions }, compliance: compliance, attention: attention.slice(0, 8) };
   }
   if (method === 'myObligations') return db.collection('obligations').find({ user_id: TEST_USER_ID }).sort({ due_at: 1 }).toArray();
   if (method === 'reportForm') {
@@ -181,12 +267,17 @@ async function dispatch(db, method, payload) {
     const status = method === 'submitReport' ? 'SUBMITTED' : 'DRAFT';
     const reporter = await users.findOne({ user_id: TEST_USER_ID });
     const dep = await departments.findOne({ department_id: reporter.department_id });
-    const record = { submission_id: submissionId, template_id: template.template_id, templateName: template.name, reporter_id: reporter.user_id, reporterName: reporter.display_name, department_id: reporter.department_id, departmentName: dep ? dep.name : '', periodStart: obligation.period_start, status: status, values: payload.values || {}, attachments: [], reviews: existing ? existing.reviews || [] : [], updated_at: new Date() };
+    const attachments = existing ? existing.attachments || [] : [];
+    for (const file of payload.attachments || []) {
+      const url = await saveFile(db, file, reporter.user_id, 'REPORT', submissionId);
+      if (url) attachments.push({ file_id: url.split('=').pop(), url: url, label: String(file.label || file.name || 'Evidence').slice(0, 180), mime_type: String(file.mimeType || '').slice(0, 120) });
+    }
+    const record = { submission_id: submissionId, template_id: template.template_id, templateName: template.name, reporter_id: reporter.user_id, reporterName: reporter.display_name, department_id: reporter.department_id, departmentName: dep ? dep.name : '', periodStart: obligation.period_start, periodEnd: obligation.period_end, status: status, values: payload.values || {}, attachments: attachments, reviews: existing ? existing.reviews || [] : [], updated_at: new Date() };
     if (status === 'SUBMITTED') record.submitted_at = new Date();
     await submissions.updateOne({ submission_id: submissionId }, { $set: record }, { upsert: true });
     await db.collection('obligations').updateOne({ obligation_id: obligation.obligation_id }, { $set: { submission_id: submissionId, submissionStatus: status, status: status } });
     await audit(db, status === 'SUBMITTED' ? 'REPORT_SUBMITTED' : 'REPORT_DRAFT_SAVED', 'SUBMISSION', submissionId);
-    if (status === 'SUBMITTED') await enqueue(db, 'REPORT_SUBMITTED', 'ceo@example.com', submissionId);
+    if (status === 'SUBMITTED') await enqueue(db, 'REPORT_SUBMITTED', 'ceo@example.com', submissionId, { templateName: template.name, submitterName: reporter.display_name, submissionId: submissionId });
     return { submission_id: submissionId, status: status };
   }
   if (method === 'reports') {
@@ -201,7 +292,7 @@ async function dispatch(db, method, payload) {
     if (!submission) throw new Error('Report not found.');
     const template = await templates.findOne({ template_id: submission.template_id });
     const reporter = await users.findOne({ user_id: submission.reporter_id });
-    const linked = submission.action_ids && submission.action_ids.length ? await actions.find({ action_id: { $in: submission.action_ids } }).toArray() : [];
+    const linked = await actions.find({ source_submission_id: submission.submission_id }).sort({ created_at: -1 }).toArray();
     return { submission: submission, template: template, reporter: reporter, fields: template.fields || [], values: submission.values || {}, attachments: submission.attachments || [], reviews: submission.reviews || [], actions: linked };
   }
   if (method === 'reviewReport') {
@@ -210,45 +301,78 @@ async function dispatch(db, method, payload) {
     await audit(db, status === 'REVIEWED' ? 'REPORT_REVIEWED' : 'REPORT_RETURNED', 'SUBMISSION', payload.submissionId);
     const submission = await submissions.findOne({ submission_id: payload.submissionId });
     const reporter = submission ? await users.findOne({ user_id: submission.reporter_id }) : null;
-    if (reporter) await enqueue(db, status, reporter.email, payload.submissionId);
+    if (reporter) await enqueue(db, status, reporter.email, payload.submissionId, { recipientName: reporter.display_name, submissionId: payload.submissionId, reviewerName: 'Adewusi Oluwaferanmi', comment: payload.comment || '' });
     return { status: status };
   }
   if (method === 'actions') {
     const query = {};
     if (payload.status) query.status = payload.status;
     if (payload.priority) query.priority = payload.priority;
-    if (payload.query) query.$or = ['instruction', 'assigneeName', 'action_id'].map(function (key) { const part = {}; part[key] = { $regex: escapeRegex(payload.query), $options: 'i' }; return part; });
+    if (payload.query) query.$or = ['title', 'description', 'instruction', 'assigneeName', 'action_id'].map(function (key) { const part = {}; part[key] = { $regex: escapeRegex(payload.query), $options: 'i' }; return part; });
     const rows = await actions.find(query).sort({ due_at: 1 }).toArray();
     return rows.map(function (row) { row.ageDays = Math.max(0, Math.floor((Date.now() - new Date(row.created_at).getTime()) / 86400000)); return row; });
   }
   if (method === 'action') {
     const action = await actions.findOne({ action_id: payload.actionId });
     if (!action) throw new Error('Action not found.');
-    return { action: action, assignee: await users.findOne({ user_id: action.assigned_to }), creator: await users.findOne({ user_id: action.created_by }), verifier: await users.findOne({ user_id: action.verifier_id }), events: await db.collection('action_events').find({ action_id: action.action_id }).sort({ created_at: 1 }).toArray() };
+    return { action: action, assignee: await users.findOne({ user_id: action.assigned_to }), creator: await users.findOne({ user_id: action.created_by }), verifier: await users.findOne({ user_id: action.verifier_id }), sourceReport: action.source_submission_id ? await submissions.findOne({ submission_id: action.source_submission_id }) : null, events: await db.collection('action_events').find({ action_id: action.action_id }).sort({ created_at: 1 }).toArray(), comments: await db.collection('action_comments').find({ action_id: action.action_id }).sort({ created_at: 1 }).toArray() };
   }
   if (method === 'createAction') {
     const assignee = await users.findOne({ user_id: payload.assignedTo });
     if (!assignee) throw new Error('Assignee not found.');
     const dep = await departments.findOne({ department_id: assignee.department_id });
-    const action = { action_id: id('ACT'), source_submission_id: payload.sourceSubmissionId || '', instruction: String(payload.instruction || '').trim(), assigned_to: assignee.user_id, assigneeName: assignee.display_name, department_id: assignee.department_id, departmentName: dep ? dep.name : '', verifier_id: payload.verifierId || TEST_USER_ID, priority: payload.priority || 'MEDIUM', due_at: new Date(payload.dueAt), status: 'ASSIGNED', created_at: new Date(), created_by: TEST_USER_ID };
-    if (!action.instruction) throw new Error('Instruction is required.');
+    const title = String(payload.title || payload.instruction || '').trim().slice(0, 180);
+    const description = String(payload.description || payload.instruction || '').trim().slice(0, 5000);
+    if (!title || !description) throw new Error('Action title and instructions are required.');
+    const dueAt = new Date(payload.dueAt);
+    if (Number.isNaN(dueAt.getTime())) throw new Error('A valid deadline is required.');
+    if (payload.sourceSubmissionId && !(await submissions.findOne({ submission_id: payload.sourceSubmissionId }))) throw new Error('Source report not found.');
+    const action = { action_id: id('ACT'), source_submission_id: payload.sourceSubmissionId || '', title: title, description: description, instruction: title, evidence_required: Boolean(payload.evidenceRequired), assigned_to: assignee.user_id, assigneeName: assignee.display_name, department_id: assignee.department_id, departmentName: dep ? dep.name : '', verifier_id: payload.verifierId || TEST_USER_ID, priority: payload.priority || 'MEDIUM', due_at: dueAt, status: 'ASSIGNED', created_at: new Date(), created_by: TEST_USER_ID };
     await actions.insertOne(action);
-    await db.collection('action_events').insertOne({ action_id: action.action_id, event_type: 'ACTION_ASSIGNED', created_at: new Date(), actor_id: TEST_USER_ID, comment: 'Action assigned.' });
+    if (action.source_submission_id) await submissions.updateOne({ submission_id: action.source_submission_id }, { $addToSet: { action_ids: action.action_id } });
+    await db.collection('action_events').insertOne({ action_id: action.action_id, event_type: 'ACTION_ASSIGNED', created_at: new Date(), actor_id: TEST_USER_ID, comment: description });
     await audit(db, 'ACTION_CREATED', 'ACTION', action.action_id);
-    await enqueue(db, 'ACTION_ASSIGNED', assignee.email, action.action_id);
+    await enqueue(db, 'ACTION_ASSIGNED', assignee.email, action.action_id, { recipientName: assignee.display_name, title: title, description: description, priority: action.priority, dueAt: action.due_at, assignedBy: 'Adewusi Oluwaferanmi' });
     return action;
   }
   if (method === 'transitionAction') {
     const allowed = ['ACKNOWLEDGED', 'IN_PROGRESS', 'COMPLETED', 'VERIFIED', 'CANCELLED'];
     if (!allowed.includes(payload.status)) throw new Error('Invalid action status.');
+    const action = await actions.findOne({ action_id: payload.actionId });
+    if (!action) throw new Error('Action not found.');
+    if (!transitionAllowed(action.status, payload.status)) throw new Error('That status transition is not allowed.');
+    let evidenceRef = String(payload.evidenceRef || '').trim();
+    if (evidenceRef && !/^https:\/\//i.test(evidenceRef)) throw new Error('Evidence links must use https.');
+    if (payload.evidenceFile) evidenceRef = await saveFile(db, payload.evidenceFile, TEST_USER_ID, 'ACTION', action.action_id);
+    if (payload.status === 'COMPLETED' && action.evidence_required && !evidenceRef) throw new Error('This action requires evidence before completion.');
+    if (payload.status === 'COMPLETED' && !String(payload.comment || '').trim() && !evidenceRef) throw new Error('Add a completion note or evidence.');
     const set = { status: payload.status, updated_at: new Date() };
     if (payload.status === 'ACKNOWLEDGED') set.acknowledged_at = new Date();
     if (payload.status === 'COMPLETED') set.completed_at = new Date();
     if (payload.status === 'VERIFIED') set.verified_at = new Date();
+    if (payload.status === 'IN_PROGRESS' && action.status === 'COMPLETED') { set.completed_at = null; set.verified_at = null; }
     await actions.updateOne({ action_id: payload.actionId }, { $set: set });
-    await db.collection('action_events').insertOne({ action_id: payload.actionId, event_type: payload.status, created_at: new Date(), actor_id: TEST_USER_ID, comment: payload.comment || '', evidence_ref: payload.evidenceRef || '' });
-    await audit(db, 'ACTION_' + payload.status, 'ACTION', payload.actionId);
+    const eventType = payload.status === 'IN_PROGRESS' && action.status === 'COMPLETED' ? 'RETURNED_FOR_REWORK' : payload.status;
+    await db.collection('action_events').insertOne({ action_id: payload.actionId, event_type: eventType, created_at: new Date(), actor_id: TEST_USER_ID, comment: payload.comment || '', evidence_ref: evidenceRef });
+    await audit(db, 'ACTION_' + eventType, 'ACTION', payload.actionId, TEST_USER_ID, { comment: payload.comment || '', evidence_ref: evidenceRef });
+    const assignee = await users.findOne({ user_id: action.assigned_to });
+    const verifier = await users.findOne({ user_id: action.verifier_id || action.created_by });
+    if (payload.status === 'COMPLETED' && verifier) await enqueue(db, 'ACTION_COMPLETED', verifier.email, action.action_id, { recipientName: verifier.display_name, title: action.title || action.instruction, assigneeName: assignee ? assignee.display_name : '', comment: payload.comment || '' });
+    if (['VERIFIED', 'IN_PROGRESS', 'CANCELLED'].includes(payload.status) && assignee) await enqueue(db, 'ACTION_' + eventType, assignee.email, action.action_id, { recipientName: assignee.display_name, title: action.title || action.instruction, reviewerName: 'Adewusi Oluwaferanmi', comment: payload.comment || '' }, new Date().toISOString().slice(0, 10));
     return { action_id: payload.actionId, status: payload.status };
+  }
+  if (method === 'addActionComment') {
+    const action = await actions.findOne({ action_id: payload.actionId });
+    if (!action) throw new Error('Action not found.');
+    const comment = String(payload.comment || '').trim().slice(0, 4000);
+    if (!comment) throw new Error('Comment is required.');
+    const row = { comment_id: id('CMT'), action_id: action.action_id, author_id: TEST_USER_ID, authorName: 'Adewusi Oluwaferanmi', text: comment, created_at: new Date() };
+    await db.collection('action_comments').insertOne(row);
+    await db.collection('action_events').insertOne({ action_id: action.action_id, event_type: 'COMMENT_ADDED', created_at: row.created_at, actor_id: TEST_USER_ID, comment: comment });
+    await audit(db, 'ACTION_COMMENT_ADDED', 'ACTION', action.action_id, TEST_USER_ID);
+    const recipient = await users.findOne({ user_id: action.assigned_to === TEST_USER_ID ? action.created_by : action.assigned_to });
+    if (recipient) await enqueue(db, 'ACTION_COMMENT_ADDED', recipient.email, action.action_id, { recipientName: recipient.display_name, title: action.title || action.instruction, authorName: row.authorName, comment: comment }, row.comment_id);
+    return row;
   }
   if (method === 'template') {
     const template = await templates.findOne({ template_id: payload.templateId });
@@ -298,7 +422,7 @@ async function dispatch(db, method, payload) {
   if (method === 'health') {
     const grouped = await db.collection('notifications').aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]).toArray();
     const notificationCounts = {}; grouped.forEach(function (row) { notificationCounts[row._id] = row.count; });
-    return { notifications: notificationCounts, mailQuotaRemaining: 'Apps Script worker not connected', triggers: [{ handler: 'MongoDB notification outbox', source: 'VERCEL_API' }], failed: await db.collection('notifications').find({ status: 'FAILED' }).limit(20).toArray() };
+    return { notifications: notificationCounts, mailQuotaRemaining: process.env.MONGODB_NOTIFICATION_SECRET ? 'Worker bridge configured' : 'Apps Script worker not connected', triggers: [{ handler: 'MongoDB policy sweep', source: 'VERCEL_API' }, { handler: 'Apps Script MailApp bridge', source: process.env.MONGODB_NOTIFICATION_SECRET ? 'CONFIGURED' : 'NOT_CONFIGURED' }], failed: await db.collection('notifications').find({ status: 'FAILED' }).limit(20).toArray() };
   }
   if (method === 'retryNotification') {
     await db.collection('notifications').updateOne({ notification_id: payload.notificationId }, { $set: { status: 'QUEUED', last_error: '', updated_at: new Date() } });
@@ -327,4 +451,4 @@ module.exports = async function handler(req, res) {
   }
 };
 
-module.exports._private = { escapeRegex, id };
+module.exports._private = { escapeRegex, id, getClient, ensureTestData, automationSweep, databaseName: DATABASE_NAME, maxUploadBytes: MAX_UPLOAD_BYTES, transitionAllowed };

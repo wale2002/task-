@@ -3,13 +3,13 @@
 
   const state = {
     bootstrap: null, context: null, permissions: {}, options: {},
-    departments: [], users: [], templates: [], route: 'dashboard', builderFields: [],
+    departments: [], users: [], templates: [], route: 'dashboard', builderFields: [], deepLinkHandled: false,
   };
 
   const NAV = [
     ['dashboard', 'Overview', '▦'], ['reporting', 'My reporting', '▤'], ['reports', 'Report repository', '▧'],
-    ['actions', 'Action tracker', '✓'], ['templates', 'Template builder', '⌘'], ['admin', 'Administration', '⚙'],
-    ['audit', 'Audit trail', '≡'], ['health', 'System health', '◉'],
+    ['actions', 'Tasks & actions', '✓'], ['templates', 'Template builder', '⌘'], ['admin', 'Administration', '⚙'],
+    ['audit', 'Audit trail', '≡'],
   ];
 
   const $ = function (selector, root) { return (root || document).querySelector(selector); };
@@ -107,6 +107,9 @@
       await loadCommon();
       renderNav();
       await go(location.hash.replace('#', '') || 'dashboard');
+      const deepLink = new URLSearchParams(location.search);
+      if (!state.deepLinkHandled && deepLink.get('action')) { state.deepLinkHandled = true; await go('actions'); await openAction(deepLink.get('action')); }
+      else if (!state.deepLinkHandled && deepLink.get('report')) { state.deepLinkHandled = true; await go('reports'); await openReport(deepLink.get('report')); }
     } catch (error) {
       $('#main').innerHTML = '<div class="panel"><div class="empty"><strong>Access unavailable</strong>' + esc(error.message) + '<br><br>Ask an administrator to verify your Workspace account and application setup.</div></div>';
       handle(error);
@@ -160,13 +163,13 @@
       ['Missing', data.cards.missing, 'danger'], ['Awaiting review', data.cards.awaitingReview, 'warning'],
       ['Open actions', data.cards.openActions, ''], ['Overdue actions', data.cards.overdueActions, 'danger'],
     ];
-    $('#main').innerHTML = '<div class="page-head"><div><h2>What needs attention</h2><p>A live operational view of reporting compliance, review backlog, and accountable work.</p></div><button class="button" onclick="App.refreshData()">Refresh data</button></div>' +
+    $('#main').innerHTML = '<div class="page-head"><div><h2>Your action items</h2><p>A live operational view of reporting compliance, review backlog, and accountable work.</p></div><button class="button" onclick="App.refreshData()">Refresh data</button></div>' +
       '<section class="cards">' + cardDefs.map(function (card) { return '<article class="metric ' + card[2] + '"><small>' + card[0] + '</small><strong>' + card[1] + '</strong></article>'; }).join('') + '</section>' +
       '<div class="grid-2"><section class="panel"><div class="panel-header"><h2>Department compliance</h2><span class="muted">Current obligations</span></div><div class="table-wrap">' +
       (data.compliance.length ? '<table><thead><tr><th>Department</th><th>Expected</th><th>Submitted</th><th>Missing</th><th>Compliance</th></tr></thead><tbody>' + data.compliance.map(function (row) {
         return '<tr><td class="cell-main">' + esc(row.departmentName) + '</td><td>' + row.expected + '</td><td>' + row.submitted + '</td><td>' + row.missing + '</td><td><div class="inline"><div class="progress"><span style="width:' + row.complianceRate + '%"></span></div><strong>' + row.complianceRate + '%</strong></div></td></tr>';
       }).join('') + '</tbody></table>' : empty('No compliance data yet', 'Publish and assign a template to begin.')) + '</div></section>' +
-      '<section class="panel"><div class="panel-header"><h2>Needs attention</h2><span class="badge danger">' + data.attention.length + ' items</span></div><div class="panel-body">' +
+      '<section class="panel"><div class="panel-header"><h2>Your action items</h2><span class="badge danger">' + data.attention.length + ' items</span></div><div class="panel-body">' +
       (data.attention.length ? '<div class="attention-list">' + data.attention.map(function (item) {
         const action = item.type === 'OVERDUE_ACTION' ? 'App.openAction(\'' + item.id + '\')' : (item.type === 'AWAITING_REVIEW' ? 'App.openReport(\'' + item.id + '\')' : 'App.go(\'reporting\')');
         return '<div class="attention-item" onclick="' + action + '" role="button" tabindex="0"><span class="pin ' + String(item.severity).toLowerCase() + '"></span><div><p>' + esc(item.title) + '</p><small>' + esc(item.type.replace(/_/g, ' ')) + ' · ' + esc(item.owner) + '</small></div><small>' + fmtDate(item.dueAt, true) + '</small></div>';
@@ -198,7 +201,7 @@
       if (type === 'DEPARTMENT') options = state.departments.map(function (department) { return { value: department.department_id, label: department.name }; });
       return '<label>' + label + '<select' + common + '><option value="">Choose…</option>' + options.map(function (option) { const v = option.value || option; return '<option value="' + attr(v) + '" ' + (String(value) === String(v) ? 'selected' : '') + '>' + esc(option.label || option) + '</option>'; }).join('') + '</select></label>';
     }
-    if (type === 'FILE') return '<label>' + label + '<input type="file"' + common + ' data-file-field="true"><span class="hint">Maximum 5 MB per file.</span></label>';
+    if (type === 'FILE') return '<label>' + label + '<input type="file"' + common + ' data-file-field="true"><span class="hint">Maximum 3 MB per file in the Vercel pilot.</span></label>';
     const htmlType = ({ NUMBER: 'number', CURRENCY: 'number', PERCENTAGE: 'number', DATE: 'date', TIME: 'time', URL: 'url' })[type] || 'text';
     return '<label>' + label + '<input type="' + htmlType + '"' + common + ' value="' + attr(value || '') + '" ' + (type === 'PERCENTAGE' ? 'min="0" max="100"' : '') + '></label>';
   }
@@ -227,7 +230,7 @@
     if (submit && !form.reportValidity()) return;
     const values = {}; const attachments = [];
     for (const input of $$('[data-field-id]', form)) {
-      if (input.dataset.fileField === 'true') { if (input.files[0]) attachments.push(await readFile(input.files[0])); }
+      if (input.dataset.fileField === 'true') { if (input.files[0]) { if (input.files[0].size > 3 * 1024 * 1024) return toast('Evidence files must be 3 MB or smaller.', 'error'); attachments.push(await readFile(input.files[0])); } }
       else values[input.dataset.fieldId] = input.value;
     }
     try {
@@ -274,18 +277,28 @@
   }
 
   async function renderActions(filters) {
-    setPage('Action tracker', 'Accountability lifecycle'); filters = filters || {};
+    setPage('Tasks & actions', 'Accountability lifecycle'); filters = filters || {};
     const actions = await rpc('actions', filters);
     $('#main').innerHTML = '<div class="page-head"><div><h2>Actions from instruction to verification</h2><p>Every action remains linked to its source, owner, deadline, evidence, and event history.</p></div>' + (state.permissions.createActions ? '<button class="button primary" onclick="App.newAction()">New action</button>' : '') + '</div>' +
       '<div class="filters"><input id="actionQuery" placeholder="Search instruction, assignee, or ID"><select id="actionStatus"><option value="">All statuses</option>' + ['ASSIGNED','ACKNOWLEDGED','IN_PROGRESS','COMPLETED','OVERDUE','VERIFIED','CANCELLED'].map(function (value) { return '<option>' + value + '</option>'; }).join('') + '</select><select id="actionPriority"><option value="">All priorities</option>' + state.options.priorities.map(function (value) { return '<option>' + value + '</option>'; }).join('') + '</select><button class="button" onclick="App.applyActionFilters()">Apply</button></div>' +
-      '<section class="panel"><div class="table-wrap">' + (actions.length ? '<table><thead><tr><th>Action</th><th>Assignee</th><th>Department</th><th>Priority</th><th>Due</th><th>Status</th><th>Age</th></tr></thead><tbody>' + actions.map(function (row) {
-        return '<tr data-open onclick="App.openAction(\'' + row.action_id + '\')"><td><span class="cell-main">' + esc(row.instruction.slice(0, 74)) + '</span><span class="cell-sub">' + esc(row.action_id) + '</span></td><td>' + esc(row.assigneeName) + '</td><td>' + esc(row.departmentName || '—') + '</td><td>' + badge(row.priority) + '</td><td>' + fmtDate(row.due_at) + '</td><td>' + badge(row.status) + '</td><td>' + row.ageDays + 'd</td></tr>';
+      '<section class="panel"><div class="table-wrap">' + (actions.length ? '<table><thead><tr><th>Action</th><th>Source</th><th>Assignee</th><th>Department</th><th>Priority</th><th>Due</th><th>Status</th><th>Age</th></tr></thead><tbody>' + actions.map(function (row) {
+        return '<tr data-open onclick="App.openAction(\'' + row.action_id + '\')"><td><span class="cell-main">' + esc((row.title || row.instruction).slice(0, 74)) + '</span><span class="cell-sub">' + esc(row.action_id) + '</span></td><td>' + (row.source_submission_id ? '<span class="badge info">Report linked</span>' : '<span class="muted">Standalone</span>') + '</td><td>' + esc(row.assigneeName) + '</td><td>' + esc(row.departmentName || '—') + '</td><td>' + badge(row.priority) + '</td><td>' + fmtDate(row.due_at) + '</td><td>' + badge(row.status) + '</td><td>' + row.ageDays + 'd</td></tr>';
       }).join('') + '</tbody></table>' : empty('No actions found', 'Create an action from a report or add a standalone instruction.')) + '</div></section>';
   }
 
   async function newAction(sourceSubmissionId) {
+    let suggestedTitle = ''; let suggestedDescription = '';
+    if (sourceSubmissionId) {
+      try {
+        const source = await rpc('report', { submissionId: sourceSubmissionId });
+        const entries = source.fields.map(function (field) { return { label: field.field_name, value: source.values[field.field_id] }; }).filter(function (item) { return item.value; });
+        const issue = entries.find(function (item) { return /risk|issue|blocker|exception|next step/i.test(item.label); }) || entries[0];
+        suggestedTitle = issue ? String(issue.value).slice(0, 100) : 'Follow up on ' + source.template.name;
+        suggestedDescription = issue ? 'Resolve the issue identified in ' + source.template.name + ':\n' + issue.value : 'Follow up on the findings in ' + source.template.name + '.';
+      } catch (error) { handle(error); }
+    }
     openModal('Create accountable action', sourceSubmissionId ? 'Linked to report' : 'Standalone instruction',
-      '<form id="actionForm" class="form-grid"><label class="wide">Instruction *<textarea id="actionInstruction" required></textarea></label><label>Assignee *<select id="actionAssignee" required>' + userOptions('', true) + '</select></label><label>Verifier<select id="actionVerifier">' + userOptions(state.context.userId, false) + '</select></label><label>Priority<select id="actionPriorityNew">' + state.options.priorities.map(function (value) { return '<option ' + (value === 'MEDIUM' ? 'selected' : '') + '>' + value + '</option>'; }).join('') + '</select></label><label>Deadline *<input type="datetime-local" id="actionDue" value="' + dateTimeLocal() + '" required></label></form>',
+      '<form id="actionForm" class="form-grid"><label class="wide">Action title *<input id="actionTitle" value="' + attr(suggestedTitle) + '" maxlength="180" required></label><label class="wide">Instructions *<textarea id="actionDescription" required>' + esc(suggestedDescription) + '</textarea></label><label>Assignee *<select id="actionAssignee" required>' + userOptions('', true) + '</select></label><label>Verifier<select id="actionVerifier">' + userOptions(state.context.userId, false) + '</select></label><label>Priority<select id="actionPriorityNew">' + state.options.priorities.map(function (value) { return '<option ' + (value === 'MEDIUM' ? 'selected' : '') + '>' + value + '</option>'; }).join('') + '</select></label><label>Deadline *<input type="datetime-local" id="actionDue" value="' + dateTimeLocal() + '" required></label><label class="inline wide"><input type="checkbox" style="width:auto" id="actionEvidenceRequired"> Evidence is required before completion</label>' + (sourceSubmissionId ? '<div class="callout wide">This action will remain linked to report ' + esc(sourceSubmissionId) + '.</div>' : '') + '</form>',
       '<button class="button" onclick="App.closeModal()">Cancel</button><button class="button primary" onclick="App.createAction(\'' + (sourceSubmissionId || '') + '\')">Create action</button>');
   }
 
@@ -293,7 +306,8 @@
     const form = $('#actionForm'); if (!form.reportValidity()) return;
     try {
       await rpc('createAction', {
-        sourceSubmissionId: sourceSubmissionId || '', instruction: $('#actionInstruction').value,
+        sourceSubmissionId: sourceSubmissionId || '', title: $('#actionTitle').value, description: $('#actionDescription').value,
+        instruction: $('#actionDescription').value, evidenceRequired: $('#actionEvidenceRequired').checked,
         assignedTo: $('#actionAssignee').value, verifierId: $('#actionVerifier').value,
         priority: $('#actionPriorityNew').value, dueAt: new Date($('#actionDue').value).toISOString(),
       });
@@ -312,23 +326,45 @@
       if (manager && action.status === 'COMPLETED' && action.assigned_to !== state.context.userId) buttons.push(['VERIFIED','Verify']);
       if (manager && action.status === 'COMPLETED') buttons.push(['IN_PROGRESS','Reopen']);
       if (manager && !['VERIFIED','CANCELLED'].includes(action.status)) buttons.push(['CANCELLED','Cancel']);
-      const timeline = data.events.map(function (event) { return '<div class="timeline-item"><p>' + esc(event.event_type.replace(/_/g, ' ')) + '</p><small>' + fmtDate(event.created_at) + (event.comment ? ' · ' + esc(event.comment) : '') + (event.evidence_ref ? ' · <a href="' + attr(event.evidence_ref) + '" target="_blank">Evidence</a>' : '') + '</small></div>'; }).join('');
+      const title = action.title || String(action.instruction || '').split(/\n\n/)[0];
+      const description = action.description || action.instruction;
+      const timeline = data.events.map(function (event) { return '<div class="timeline-item"><p>' + esc(event.event_type.replace(/_/g, ' ')) + '</p><small>' + fmtDate(event.created_at) + (event.comment ? ' · ' + esc(event.comment) : '') + (event.evidence_ref ? ' · <a href="' + attr(event.evidence_ref) + '" target="_blank" rel="noopener">Evidence</a>' : '') + '</small></div>'; }).join('');
+      const comments = (data.comments || []).map(function (comment) { return '<div class="comment"><strong>' + esc(comment.authorName || comment.author_id) + '</strong><p>' + esc(comment.text) + '</p><small>' + fmtDate(comment.created_at) + '</small></div>'; }).join('');
       openModal('Action details', 'Action · ' + action.action_id,
-        '<div class="detail-grid"><div><div class="inline">' + badge(action.status) + badge(action.priority) + '</div><h2 class="section-title">' + esc(action.instruction) + '</h2><dl class="kv"><dt>Assignee</dt><dd>' + esc(data.assignee.display_name) + '</dd><dt>Created by</dt><dd>' + esc(data.creator.display_name) + '</dd><dt>Verifier</dt><dd>' + esc(data.verifier ? data.verifier.display_name : '—') + '</dd><dt>Due</dt><dd>' + fmtDate(action.due_at) + '</dd><dt>Acknowledged</dt><dd>' + fmtDate(action.acknowledged_at) + '</dd><dt>Completed</dt><dd>' + fmtDate(action.completed_at) + '</dd><dt>Verified</dt><dd>' + fmtDate(action.verified_at) + '</dd></dl></div><aside class="detail-aside"><h3>Event timeline</h3><div class="timeline">' + timeline + '</div></aside></div>',
-        '<button class="button" onclick="App.closeModal()">Close</button>' + buttons.map(function (button) { return '<button class="button ' + (button[0] === 'VERIFIED' ? 'primary' : '') + '" onclick="App.transitionAction(\'' + id + '\',\'' + button[0] + '\')">' + button[1] + '</button>'; }).join(''), true);
+        '<div class="detail-grid"><div><div class="inline">' + badge(action.status) + badge(action.priority) + (action.evidence_required ? '<span class="badge warning">Evidence required</span>' : '') + '</div><h2 class="section-title">' + esc(title) + '</h2><p class="action-description">' + esc(description) + '</p><dl class="kv"><dt>Source report</dt><dd>' + (data.sourceReport ? '<button class="button small" onclick="App.openReport(\'' + data.sourceReport.submission_id + '\')">' + esc(data.sourceReport.templateName || data.sourceReport.submission_id) + '</button>' : 'Standalone action') + '</dd><dt>Assignee</dt><dd>' + esc(data.assignee.display_name) + '</dd><dt>Created by</dt><dd>' + esc(data.creator.display_name) + '</dd><dt>Verifier</dt><dd>' + esc(data.verifier ? data.verifier.display_name : '—') + '</dd><dt>Due</dt><dd>' + fmtDate(action.due_at) + '</dd><dt>Acknowledged</dt><dd>' + fmtDate(action.acknowledged_at) + '</dd><dt>Completed</dt><dd>' + fmtDate(action.completed_at) + '</dd><dt>Verified</dt><dd>' + fmtDate(action.verified_at) + '</dd></dl><h3 class="section-title">Discussion</h3><div class="comments">' + (comments || '<p class="muted">No comments yet.</p>') + '</div><button class="button small" onclick="App.addActionComment(\'' + id + '\')">Add comment</button></div><aside class="detail-aside"><h3>Event timeline</h3><div class="timeline">' + timeline + '</div></aside></div>',
+        '<button class="button" onclick="App.closeModal()">Close</button>' + buttons.map(function (button) { const label = button[0] === 'IN_PROGRESS' && action.status === 'COMPLETED' ? 'Return for rework' : button[1]; return '<button class="button ' + (button[0] === 'VERIFIED' ? 'primary' : '') + '" onclick="App.transitionAction(\'' + id + '\',\'' + button[0] + '\')">' + label + '</button>'; }).join(''), true);
     } catch (error) { handle(error); }
   }
 
   async function transitionAction(id, status) {
     let comment = ''; let evidenceRef = '';
     if (status === 'COMPLETED') {
-      comment = window.prompt('Completion note or evidence description:') || '';
-      if (!comment) return;
-      evidenceRef = window.prompt('Optional https evidence link:', '') || '';
+      openModal('Complete action', 'Evidence and completion note', '<form id="completeActionForm" class="form-grid"><label class="wide">Completion note *<textarea id="completionComment" required></textarea></label><label class="wide">Secure evidence link<input type="url" id="completionEvidenceUrl" placeholder="https://"></label><label class="wide">Or upload evidence<input type="file" id="completionEvidenceFile"><span class="hint">PDF, image, or document up to 3 MB.</span></label></form>', '<button class="button" onclick="App.openAction(\'' + id + '\')">Back</button><button class="button primary" onclick="App.completeAction(\'' + id + '\')">Submit for verification</button>');
+      return;
     } else if (['IN_PROGRESS','CANCELLED'].includes(status)) {
-      comment = window.prompt('Comment:', '') || '';
+      comment = window.prompt(status === 'IN_PROGRESS' ? 'Progress note or reason for rework:' : 'Cancellation reason:', '') || '';
+      if (!comment && status === 'CANCELLED') return;
+    } else if (status === 'VERIFIED') {
+      comment = window.prompt('Optional verification note:', 'Evidence reviewed and accepted.') || '';
     }
     try { await rpc('transitionAction', { actionId: id, status: status, comment: comment, evidenceRef: evidenceRef }); toast('Action updated.', 'success'); closeModal(); await renderActions(); } catch (error) { handle(error); }
+  }
+
+  async function completeAction(id) {
+    const form = $('#completeActionForm'); if (!form.reportValidity()) return;
+    const file = $('#completionEvidenceFile').files[0];
+    if (file && file.size > 3 * 1024 * 1024) return toast('Evidence files must be 3 MB or smaller.', 'error');
+    try {
+      const evidenceFile = file ? await readFile(file) : null;
+      await rpc('transitionAction', { actionId: id, status: 'COMPLETED', comment: $('#completionComment').value, evidenceRef: $('#completionEvidenceUrl').value, evidenceFile: evidenceFile });
+      toast('Completion submitted for verification.', 'success'); closeModal(); await renderActions();
+    } catch (error) { handle(error); }
+  }
+
+  async function addActionComment(id) {
+    const comment = window.prompt('Add a comment to this action:');
+    if (!comment || !comment.trim()) return;
+    try { await rpc('addActionComment', { actionId: id, comment: comment }); toast('Comment added.', 'success'); await openAction(id); } catch (error) { handle(error); }
   }
 
   async function renderTemplates() {
@@ -450,6 +486,7 @@
     go: go, closeModal: closeModal, openObligation: openObligation, saveReport: saveReport,
     applyReportFilters: function () { renderReports({ query: $('#reportQuery').value, departmentId: $('#reportDepartment').value, status: $('#reportStatus').value }); },
     openReport: openReport, review: review, newAction: newAction, createAction: createAction, openAction: openAction, transitionAction: transitionAction,
+    completeAction: completeAction, addActionComment: addActionComment,
     applyActionFilters: function () { renderActions({ query: $('#actionQuery').value, status: $('#actionStatus').value, priority: $('#actionPriority').value }); },
     editTemplate: editTemplate, saveTemplate: saveTemplate, publishTemplate: publishTemplate, archiveTemplate: archiveTemplate,
     addField: function () { state.builderFields.push({ fieldName: '', fieldType: 'TEXT', required: false, options: [] }); renderFieldBuilder(); },

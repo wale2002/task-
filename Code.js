@@ -40,6 +40,7 @@ function api(method, payload) {
     actions: listActions_,
     action: getActionDetails_,
     transitionAction: transitionAction_,
+    addActionComment: addActionComment_,
     audit: listAudit_,
     health: getSystemHealth_,
     retryNotification: retryNotification_,

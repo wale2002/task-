@@ -12,6 +12,7 @@ Accountability Hub is a deployable Google Apps Script MVP for structured managem
 - Private Drive evidence and secure URL evidence
 - Report repository with role-scoped search and complete traceability
 - Actions linked to source reports with acknowledgement, progress, completion, evidence, verification, reopening, and cancellation
+- Separate action title/instructions, evidence-required policy, discussion threads, and explicit return-for-rework history
 - Exception-first dashboards for reporting compliance, review backlog, and overdue actions
 - Append-only audit events for business-state changes
 - Idempotent notification outbox, retries, unacknowledged reminders, due-soon reminders, three escalation stages, and daily digests
@@ -41,7 +42,36 @@ The repository includes a Vercel build that assembles the Apps Script HTML parti
 
 Set `MONGODB_URI` and, optionally, `MONGODB_DATABASE` (defaults to `accountability_hub`) in every Vercel environment. The first successful API request creates indexes and inserts a small, clearly identified test dataset only when the database contains no users. Records created or edited in the UI are then persisted in Atlas.
 
-The MongoDB deployment currently uses a test executive context and must not receive confidential production data until authentication is connected. Apps Script remains the intended notification worker: it should retrieve queued outbox records from a protected API endpoint, send them through `MailApp`, and report delivery status.
+The MongoDB deployment currently uses a test executive context and must not receive confidential production data until authentication is connected. Dashboard totals are calculated only from MongoDB records; the UI does not substitute hard-coded metric totals.
+
+The deployed action loop supports:
+
+1. Create an action from a report, with the issue context prefilled.
+2. Assign title, instructions, owner, verifier, priority, deadline, and an evidence requirement.
+3. Acknowledge, start, complete with a secure link or uploaded proof, verify, or return for rework.
+4. Discuss the action in a timestamped thread and inspect its complete event timeline.
+5. Run policy sweeps that mark missing reports and overdue actions, queue reminders, and escalate through manager, HOD, and executive levels.
+
+Evidence uploaded through the Vercel UI is stored in MongoDB and served by a dedicated file endpoint. The MVP caps these files at 3 MB; use private object storage with authenticated, expiring links before storing sensitive production evidence.
+
+### Connect the Apps Script notification worker to MongoDB
+
+The repository includes `MongoNotificationWorker.js`. It claims queued jobs from the protected Vercel endpoint, sends them with `MailApp`, and reports success or retry state. This keeps Apps Script as the email transport while MongoDB remains the workflow database.
+
+1. Add a strong random `MONGODB_NOTIFICATION_SECRET` to the Vercel project. Do not commit it.
+2. Push this repository to an Apps Script project with `clasp` or copy the root Apps Script files into the editor.
+3. Replace all pilot placeholder addresses with real approved Workspace users.
+4. Run the following once in Apps Script, using the same secret:
+
+```javascript
+configureMongoNotificationWorker(
+  'https://YOUR-APP.vercel.app/api/notification-worker',
+  'THE-SAME-SECRET-STORED-IN-VERCEL',
+  'https://YOUR-APP.vercel.app'
+);
+```
+
+That function stores the values in Script Properties and installs one shared 15-minute trigger. Run `processMongoNotifications()` manually once and inspect the execution log before enabling a pilot. Assignment and acknowledgement reminders include a direct portal link; the link still relies on the application identity layer, which must be completed before production use.
 
 ### Apps Script production app
 

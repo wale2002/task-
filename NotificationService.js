@@ -21,20 +21,24 @@ function notificationContent_(templateKey, payload) {
     REPORT_SUBMITTED: ['Report awaiting review', '<p><strong>' + safe(payload.templateName) + '</strong> was submitted by ' + safe(payload.submitterName) + '.</p>'],
     REPORT_RETURNED: ['Report returned for clarification', '<p>Your report was returned by ' + safe(payload.reviewerName) + '.</p><p><strong>Reason:</strong> ' + safe(payload.comment) + '</p>'],
     REPORT_REVIEWED: ['Report reviewed', '<p>Your report has been reviewed by ' + safe(payload.reviewerName) + '.</p>'],
-    ACTION_ASSIGNED: ['New action assigned: ' + safe(payload.priority), '<p>' + safe(payload.assignedBy) + ' assigned you an action.</p><p><strong>' + safe(payload.instruction) + '</strong></p><p>Due: ' + safe(formatDateForMessage_(payload.dueAt)) + '</p>'],
+    ACTION_ASSIGNED: ['[ACTION REQUIRED] Task assigned - ' + safe(payload.title || payload.priority), '<p>' + safe(payload.assignedBy) + ' assigned you an action.</p><p><strong>' + safe(payload.title || payload.instruction) + '</strong></p><p>' + safe(payload.description || '') + '</p><p>Priority: ' + safe(payload.priority) + '<br>Due: ' + safe(formatDateForMessage_(payload.dueAt)) + '</p>'],
     ACTION_COMPLETED: ['Action ready for verification', '<p>' + safe(payload.assigneeName) + ' marked an action complete.</p><p><strong>' + safe(payload.instruction) + '</strong></p><p>' + safe(payload.comment) + '</p>'],
     ACTION_VERIFIED: ['Action verified', '<p>Your completed action was verified by ' + safe(payload.reviewerName) + '.</p>'],
     ACTION_IN_PROGRESS: ['Action returned to in progress', '<p>' + safe(payload.reviewerName) + ' returned the action to In Progress.</p><p>' + safe(payload.comment) + '</p>'],
+    ACTION_RETURNED_FOR_REWORK: ['Action returned for rework', '<p>' + safe(payload.reviewerName) + ' returned the action for rework.</p><p>' + safe(payload.comment) + '</p>'],
     ACTION_CANCELLED: ['Action cancelled', '<p>' + safe(payload.reviewerName) + ' cancelled the action.</p><p>' + safe(payload.comment) + '</p>'],
+    ACTION_COMMENT_ADDED: ['New action comment', '<p>' + safe(payload.authorName) + ' added a comment to <strong>' + safe(payload.title) + '</strong>.</p><p>' + safe(payload.comment) + '</p>'],
     ACTION_UNACKNOWLEDGED: ['Reminder: acknowledge your action', '<p>Please acknowledge this action:</p><p><strong>' + safe(payload.instruction) + '</strong></p><p>Due: ' + safe(formatDateForMessage_(payload.dueAt)) + '</p>'],
     ACTION_DUE_SOON: ['Action due soon', '<p>Your action is due soon:</p><p><strong>' + safe(payload.instruction) + '</strong></p><p>Due: ' + safe(formatDateForMessage_(payload.dueAt)) + '</p>'],
     ACTION_OVERDUE: ['Overdue action - ' + safe(payload.stage), '<p>This action is overdue:</p><p><strong>' + safe(payload.instruction) + '</strong></p><p>Assignee: ' + safe(payload.assigneeName) + '<br>Due: ' + safe(formatDateForMessage_(payload.dueAt)) + '</p>'],
     DAILY_DIGEST: ['Daily accountability digest', '<p><strong>' + safe(payload.missingReports) + '</strong> missing reports, <strong>' + safe(payload.awaitingReview) + '</strong> awaiting review, and <strong>' + safe(payload.overdueActions) + '</strong> overdue actions require attention.</p>'],
   };
   const selected = templates[templateKey] || ['Accountability Hub notification', '<p>An item requires your attention.</p>'];
+  const deepLink = payload.actionId ? appUrl + '?action=' + encodeURIComponent(payload.actionId) + '#actions' : (payload.submissionId ? appUrl + '?report=' + encodeURIComponent(payload.submissionId) + '#reports' : appUrl);
+  const buttonLabel = templateKey === 'ACTION_ASSIGNED' || templateKey === 'ACTION_UNACKNOWLEDGED' ? 'Acknowledge / view task' : 'Open ' + APP.NAME;
   return {
     subject: selected[0],
-    html: '<div style="font-family:Arial,sans-serif;color:#172033;max-width:620px"><p>Hello ' + safe(payload.recipientName || 'there') + ',</p>' + selected[1] + (appUrl ? '<p><a href="' + safe(appUrl) + '" style="background:#1f5eff;color:white;padding:10px 16px;border-radius:6px;text-decoration:none;display:inline-block">Open ' + safe(APP.NAME) + '</a></p>' : '') + '<p style="font-size:12px;color:#667085">This is an automated operational notification.</p></div>',
+    html: '<div style="font-family:Arial,sans-serif;color:#172033;max-width:620px"><p>Hello ' + safe(payload.recipientName || 'there') + ',</p>' + selected[1] + (appUrl ? '<p><a href="' + safe(deepLink) + '" style="background:#1f5eff;color:white;padding:10px 16px;border-radius:6px;text-decoration:none;display:inline-block">' + safe(buttonLabel) + '</a></p>' : '') + '<p style="font-size:12px;color:#667085">This is an automated operational notification.</p></div>',
   };
 }
 
