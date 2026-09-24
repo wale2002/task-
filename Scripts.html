@@ -33,14 +33,26 @@
   const loading = function () { $('#main').innerHTML = '<div class="page-loader"><span></span><p>Loading the latest records…</p></div>'; };
 
   function rpc(method, payload) {
-    return new Promise(function (resolve, reject) {
-      google.script.run
-        .withSuccessHandler(function (response) {
-          if (response && response.ok) resolve(response.data);
-          else reject(new Error((response && response.error && response.error.message) || 'The request failed.'));
-        })
-        .withFailureHandler(function (error) { reject(new Error((error && error.message) || 'The request failed.')); })
-        .api(method, payload || {});
+    if (typeof google !== 'undefined' && google.script && google.script.run) {
+      return new Promise(function (resolve, reject) {
+        google.script.run
+          .withSuccessHandler(function (response) {
+            if (response && response.ok) resolve(response.data);
+            else reject(new Error((response && response.error && response.error.message) || 'The request failed.'));
+          })
+          .withFailureHandler(function (error) { reject(new Error((error && error.message) || 'The request failed.')); })
+          .api(method, payload || {});
+      });
+    }
+    return fetch('/api/rpc', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method: method, payload: payload || {} }),
+    }).then(function (response) {
+      return response.json().catch(function () { return { ok: false, error: { message: 'The server returned an invalid response.' } }; }).then(function (body) {
+        if (!response.ok || !body.ok) throw new Error((body.error && body.error.message) || 'The request failed.');
+        return body.data;
+      });
     });
   }
 

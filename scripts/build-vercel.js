@@ -9,14 +9,13 @@ const output = path.join(root, 'dist');
 const template = fs.readFileSync(path.join(root, 'Index.html'), 'utf8');
 const styles = fs.readFileSync(path.join(root, 'Styles.html'), 'utf8');
 const scripts = fs.readFileSync(path.join(root, 'Scripts.html'), 'utf8');
-const demoApi = fs.readFileSync(path.join(root, 'vercel', 'demo-api.js'), 'utf8');
 
 const html = template
   .replace('<?!= include(\'Styles\'); ?>', function () { return styles; })
   .replace('<?= appName ?>', 'Accountability Hub')
   .replace(
     '<script><?!= include(\'Scripts\'); ?></script>',
-    function () { return `<script>${demoApi}</script>\n    <script>${scripts}</script>`; },
+    function () { return `<script>${scripts}</script>`; },
   );
 
 for (const [index, match] of Array.from(html.matchAll(/<script>([\s\S]*?)<\/script>/g)).entries()) {

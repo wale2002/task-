@@ -35,11 +35,13 @@ Move beyond Apps Script when pilot load approaches quotas, execution routinely n
 
 ## Deploy
 
-### Vercel stakeholder preview
+### Vercel + MongoDB Atlas deployment
 
-The repository includes a Vercel build that assembles the Apps Script HTML partials into a standalone, interactive preview with representative management data. Vercel runs `npm run build` and publishes `dist/`.
+The repository includes a Vercel build that assembles the Apps Script HTML partials into a standalone frontend. On Vercel, the browser calls `api/rpc.js`, which uses the official MongoDB Node.js driver and the server-only `MONGODB_URI` environment variable. The connection string is never shipped to the browser or committed to Git.
 
-The preview is for stakeholder review; sample records reset on refresh. Persistent Google Sheets data, Drive evidence, scheduled reminders, and escalation emails run from the Apps Script production deployment below.
+Set `MONGODB_URI` and, optionally, `MONGODB_DATABASE` (defaults to `accountability_hub`) in every Vercel environment. The first successful API request creates indexes and inserts a small, clearly identified test dataset only when the database contains no users. Records created or edited in the UI are then persisted in Atlas.
+
+The MongoDB deployment currently uses a test executive context and must not receive confidential production data until authentication is connected. Apps Script remains the intended notification worker: it should retrieve queued outbox records from a protected API endpoint, send them through `MailApp`, and report delivery status.
 
 ### Apps Script production app
 

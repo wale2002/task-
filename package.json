@@ -8,6 +8,9 @@
     "test": "node --test tests/*.test.js",
     "check": "node scripts/check-syntax.js"
   },
+  "dependencies": {
+    "mongodb": "7.6.0"
+  },
   "devDependencies": {
     "@google/clasp": "^3.4.1"
   }
